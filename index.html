@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
+<meta name="theme-color" content="#000000" />
+<title>Galaxy S Ultra — Live Wallpapers</title>
+<link rel="stylesheet" href="shared/style.css" />
+<style>
+  body { display: flex; align-items: center; justify-content: center; }
+  .gallery {
+    width: 100%;
+    max-width: 520px;
+    padding: 32px 20px;
+    display: grid;
+    gap: 12px;
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 300;
+    color: #fff;
+  }
+  p.sub {
+    margin: 0 0 20px;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  a.card {
+    display: block;
+    padding: 18px 20px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    background: radial-gradient(120% 140% at 0% 0%, rgba(80, 110, 255, 0.08), transparent 60%);
+    color: #fff;
+    text-decoration: none;
+    transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+  }
+  a.card:active { transform: scale(0.985); border-color: rgba(255, 255, 255, 0.35); }
+  a.card.disabled { opacity: 0.35; pointer-events: none; }
+  .num {
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    color: rgba(255, 255, 255, 0.45);
+  }
+  .title {
+    font-size: 17px;
+    margin-top: 4px;
+    letter-spacing: 0.04em;
+  }
+  .desc {
+    margin-top: 4px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.55);
+  }
+</style>
+</head>
+<body>
+<div class="gallery">
+  <h1>Galaxy&nbsp;Ultra</h1>
+  <p class="sub">Live Wallpapers · WebGL2</p>
+
+  <a class="card" href="wallpapers/milky-way/">
+    <div class="num">01</div>
+    <div class="title">Milky Way</div>
+    <div class="desc">Rotating deep-space particle system</div>
+  </a>
+  <a class="card disabled" aria-disabled="true">
+    <div class="num">02</div>
+    <div class="title">Gravity Grid</div>
+    <div class="desc">Coming in run 2</div>
+  </a>
+  <a class="card disabled" aria-disabled="true">
+    <div class="num">03</div>
+    <div class="title">Quantum Starfield</div>
+    <div class="desc">Coming in run 3</div>
+  </a>
+  <a class="card disabled" aria-disabled="true">
+    <div class="num">04</div>
+    <div class="title">Accretion Disk</div>
+    <div class="desc">Coming in run 4</div>
+  </a>
+  <a class="card disabled" aria-disabled="true">
+    <div class="num">05</div>
+    <div class="title">Cosmic Nebula</div>
+    <div class="desc">Coming in run 5</div>
+  </a>
+</div>
+</body>
+</html>
