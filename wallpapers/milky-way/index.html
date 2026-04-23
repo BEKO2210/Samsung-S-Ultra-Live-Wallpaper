@@ -1,14 +1,170 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
 <meta name="theme-color" content="#000000" />
 <title>Milky Way — Live Wallpaper</title>
 <link rel="stylesheet" href="../../shared/style.css" />
+<style>
+  .info-btn {
+    position: fixed;
+    top: env(safe-area-inset-top, 16px);
+    right: 16px;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(0,0,0,0.45);
+    color: rgba(255,255,255,0.85);
+    font: 500 16px/36px -apple-system, system-ui, sans-serif;
+    text-align: center;
+    cursor: pointer;
+    z-index: 10;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .info-panel {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.78);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 24px;
+    overflow-y: auto;
+  }
+  .info-panel.open { display: flex; }
+  .info-card {
+    max-width: 520px;
+    width: 100%;
+    color: #fff;
+    font: 400 14px/1.55 -apple-system, system-ui, sans-serif;
+  }
+  .info-card h1 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 400;
+  }
+  .info-card p.sub {
+    margin: 0 0 18px;
+    color: rgba(255,255,255,0.5);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .info-card h2 {
+    margin: 20px 0 6px;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.85);
+  }
+  .info-card ol { margin: 0; padding-left: 20px; }
+  .info-card li { margin-bottom: 4px; color: rgba(255,255,255,0.82); }
+  .info-card a {
+    color: #9fc0ff;
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(159,192,255,0.4);
+  }
+  .info-card .download {
+    display: inline-block;
+    margin-top: 18px;
+    padding: 12px 18px;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 12px;
+    color: #fff;
+    text-decoration: none;
+    letter-spacing: 0.04em;
+    background: linear-gradient(135deg, rgba(80,110,255,0.18), rgba(255,140,80,0.12));
+  }
+  .info-card .download small {
+    display: block;
+    font-size: 11px;
+    color: rgba(255,255,255,0.55);
+    margin-top: 2px;
+  }
+  .close-btn {
+    position: absolute;
+    top: env(safe-area-inset-top, 16px);
+    right: 16px;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+    font: 500 20px/34px -apple-system, system-ui, sans-serif;
+    text-align: center;
+    cursor: pointer;
+  }
+</style>
 </head>
 <body>
-<div class="hud" id="hud">Milky Way</div>
+<div class="hud" id="hud">Milky Way · Sgr A*</div>
+
+<button class="info-btn" id="info-open" aria-label="Info">i</button>
+
+<div class="info-panel" id="info-panel" role="dialog" aria-modal="true" aria-label="Wallpaper installieren">
+  <button class="close-btn" id="info-close" aria-label="Schließen">×</button>
+  <div class="info-card">
+    <h1>Milchstraße · Sgr A*</h1>
+    <p class="sub">Live-Wallpaper · WebGL2</p>
+
+    <p>Zentrales supermassereiches Schwarzes Loch mit Ereignishorizont,
+    Photonenring, Doppler-verstärkter Akkretionsscheibe und
+    Gravitationslinseneffekt auf umgebende Sterne. Rotiert mit
+    differenzieller Galaxierotation und reagiert auf Berührung / Neigung.</p>
+
+    <a class="download" href="./wallpaper.html" download="milky-way-wallpaper.html">
+      ⬇ Wallpaper herunterladen (eine Datei)
+      <small>wallpaper.html · funktioniert offline · ~24 KB</small>
+    </a>
+
+    <h2>Als Samsung-Wallpaper verwenden</h2>
+    <ol>
+      <li><b>Als Video-Wallpaper (empfohlen):</b> Diese Seite im Vollbild
+      öffnen, mit dem Android-Bildschirmrekorder 10–30 Sek. aufnehmen, dann
+      <i>Einstellungen → Hintergrund und Stil → Hintergrundbild → Galerie</i>
+      und das Video wählen. Haken bei „Als Endlosschleife abspielen".</li>
+
+      <li><b>Als Live-Web-Wallpaper:</b> App wie
+      <i>„Web Page Live Wallpaper"</i> oder <i>„HTML Live Wallpaper"</i> aus
+      dem Play Store installieren, auf <i>„Lokale HTML-Datei"</i> stellen und
+      die heruntergeladene <code>wallpaper.html</code> auswählen.</li>
+
+      <li><b>Als Vollbild-App (ohne echtes Wallpaper):</b> Im Samsung Internet
+      oder Chrome diese Seite öffnen → Menü → <i>„Zur Startseite hinzufügen"</i>.
+      Das Icon startet dann wie eine Vollbild-App.</li>
+
+      <li><b>Am PC ansehen:</b> <code>wallpaper.html</code> einfach doppelklicken
+      — keine Installation nötig, läuft in jedem modernen Browser.</li>
+    </ol>
+
+    <h2>Hinweise</h2>
+    <ol>
+      <li>Optimiert für Samsung Galaxy S Ultra (1440×3088, 120 Hz OLED).
+      Auf OLED-Displays wirkt das perfekt schwarze Zentrum des Schwarzen Lochs
+      besonders tief.</li>
+      <li>Akku: Live-Wallpaper pausiert automatisch bei ausgeschaltetem
+      Display (<code>visibilitychange</code>).</li>
+    </ol>
+  </div>
+</div>
+
 <script type="module" src="./main.js"></script>
+<script>
+  const openBtn = document.getElementById('info-open');
+  const closeBtn = document.getElementById('info-close');
+  const panel = document.getElementById('info-panel');
+  openBtn.addEventListener('click', () => panel.classList.add('open'));
+  closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+  panel.addEventListener('click', (e) => {
+    if (e.target === panel) panel.classList.remove('open');
+  });
+</script>
 </body>
 </html>
