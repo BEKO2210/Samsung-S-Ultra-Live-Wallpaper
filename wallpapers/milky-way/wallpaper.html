@@ -258,11 +258,12 @@ function runWallpaper(mainFn) {
 return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, runWallpaper };
 })();
 const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, mat4Perspective, mat4LookAt } = __engine;
-const STAR_COUNT = 120000;
+const STAR_COUNT = 140000;
 const ARMS = 4;
 const BULGE_FRACTION = 0.22;
 const ARM_SPREAD = 0.22;
 const DISK_THICKNESS = 0.035;
+const FOG_QUAD_RADIUS = 1.35;       // galaxy fog disk extent in world units
 
 // Sagittarius A* visual parameters, in the galaxy's coordinate space.
 // Angular sizes are tuned for a pleasing portrait composition, not to scale.
@@ -499,6 +500,128 @@ void main() {
 }
 `;
 
+// --- Galaxy "fog" plane: a single quad in the xz plane, shaded procedurally
+// with logarithmic spiral arms, dust lanes, and HII (Hα) star-forming regions.
+// This is the photographic-plate layer equivalent to what 100,000 Stars uses,
+// but generated on the fly so it stays sharp at any zoom.
+const FOG_VS = /* glsl */ `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;       // [-1..1] in galaxy plane
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform float uQuadRadius;
+uniform vec2  uParallax;
+out vec2  vPlane;                        // galaxy-plane coords (world units)
+out float vViewZ;
+void main() {
+  vec2 xz = aPos * uQuadRadius;
+  vec3 world = vec3(xz.x, 0.0, xz.y);
+  world.xy += uParallax * 0.04;
+  vec4 viewPos = uView * vec4(world, 1.0);
+  vPlane = xz;
+  vViewZ = -viewPos.z;
+  gl_Position = uProj * viewPos;
+}
+`;
+
+const FOG_FS = /* glsl */ `#version 300 es
+precision highp float;
+
+#define ARMS 2.0
+#define PITCH 0.48
+#define TAU 6.28318530718
+
+in vec2  vPlane;
+in float vViewZ;
+uniform float uTime;
+out vec4 outColor;
+
+// Cheap 2-D value noise.
+float hash(vec2 p) {
+  p = fract(p * vec2(127.1, 311.7));
+  p += dot(p, p + 19.19);
+  return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++) {
+    s += a * vnoise(p);
+    p *= 2.03; a *= 0.5;
+  }
+  return s;
+}
+
+void main() {
+  float r = length(vPlane);
+  if (r > 1.25) discard;
+
+  // Differential rotation of the pattern itself, slower at larger radii.
+  float rotRate = 0.18 / (r * 1.4 + 0.22);
+  float theta = atan(vPlane.y, vPlane.x) + uTime * rotRate;
+
+  // Logarithmic spiral: arms at theta - log(r)/pitch = k * (2π/N).
+  float armPhase = theta - log(r + 0.08) / PITCH;
+  float armCos   = cos(ARMS * armPhase);
+  float dustCos  = cos(ARMS * armPhase - 0.65);   // dust lanes sit inside arms
+  float hiiCos   = cos(ARMS * armPhase + 0.20);
+
+  // Bright arms (soft, broad) + a narrower high-density ridge for structure.
+  float armsBroad = pow(max(armCos * 0.5 + 0.5, 0.0), 2.2);
+  float armsRidge = pow(max(armCos, 0.0), 12.0);
+  float arms = armsBroad * 0.55 + armsRidge * 0.75;
+
+  // Dust lanes — dark narrow bands parallel to arms. Strong in mid-disk,
+  // they fade toward the bulge (too hot) and the outer edge (too thin).
+  float dustMask = pow(max(dustCos, 0.0), 22.0);
+  float dust = dustMask * smoothstep(0.08, 0.32, r) * smoothstep(1.1, 0.5, r);
+
+  // Overall disk density: bulge + exponential disk, edge-faded.
+  float bulge = exp(-r * 5.5) * 1.35;
+  float disk  = exp(-r * 1.7) * (1.0 - smoothstep(1.0, 1.24, r));
+  float base  = bulge + disk * 0.65;
+
+  // Turbulent breakup so arms aren't perfectly geometric.
+  vec2 turb = vec2(cos(theta), sin(theta)) * r;
+  float tn = fbm(turb * 3.6 + vec2(uTime * 0.02, 0.0));
+  float clumps = 0.55 + 0.9 * tn;
+
+  float density = base * (1.0 + arms * 1.6 * clumps) * (1.0 - dust * 0.85);
+  density = max(density, 0.0);
+
+  // HII regions (pink Hα): bright knots along arm tips, sparse and bloomy.
+  float hiiArm   = pow(max(hiiCos, 0.0), 26.0);
+  float hiiRing  = smoothstep(0.25, 0.55, r) * (1.0 - smoothstep(0.9, 1.15, r));
+  float hiiNoise = pow(fbm(vPlane * 7.2 + 11.0), 2.2);
+  float hii = hiiArm * hiiRing * hiiNoise * 2.4;
+
+  // Color ramp: warm yellow bulge → neutral white mid-disk → blue outer rim.
+  vec3 warm  = vec3(1.00, 0.78, 0.42);
+  vec3 mid   = vec3(0.92, 0.90, 1.00);
+  vec3 outer = vec3(0.55, 0.70, 1.05);
+  vec3 pink  = vec3(1.00, 0.45, 0.70);
+  vec3 color = mix(mid, outer, smoothstep(0.3, 0.95, r));
+  color = mix(color, warm, smoothstep(0.5, 0.0, r));
+  color += pink * hii;
+
+  // Fade the outermost rim and suppress the dead zone behind Sgr A* so the
+  // eventual black-hole pass still reads clearly on top.
+  float edgeFade = smoothstep(1.2, 0.55, r);
+  float coreFade = smoothstep(0.04, 0.09, r);
+
+  vec3 emit = color * density * edgeFade * coreFade * 0.9;
+  outColor = vec4(emit, 1.0);
+}
+`;
+
 function mixColor(a, b, t) {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
@@ -601,6 +724,21 @@ function main() {
   uploadAttrib(gl, 5, stars.size,    1);
   uploadAttrib(gl, 6, stars.twinkle, 1);
 
+  // --- Galaxy fog program (procedural spiral disk, drawn behind stars) ---
+  const fogProg = link(gl, FOG_VS, FOG_FS);
+  const fu = uniformLocs(gl, fogProg, [
+    'uProj', 'uView', 'uTime', 'uQuadRadius', 'uParallax',
+  ]);
+  const fogVao = gl.createVertexArray();
+  gl.bindVertexArray(fogVao);
+  const fogBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, fogBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1,  1, -1,  -1, 1,  -1, 1,  1, -1,  1, 1]),
+    gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
   // --- Black-hole pass (fullscreen triangle) ---
   const bhProg = link(gl, BH_VS, BH_FS);
   const bu = uniformLocs(gl, bhProg, [
@@ -683,6 +821,17 @@ function main() {
     const diskYaw   = 0.0; // xz-plane disk, major axis already horizontal in view
 
     gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // --- Pass 0: galaxy fog disk (additive, behind stars) ---
+    gl.useProgram(fogProg);
+    gl.bindVertexArray(fogVao);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.uniformMatrix4fv(fu.uProj, false, proj);
+    gl.uniformMatrix4fv(fu.uView, false, view);
+    gl.uniform1f(fu.uTime, t);
+    gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
+    gl.uniform2f(fu.uParallax, input.x, input.y);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     // --- Pass 1: stars (additive) ---
     gl.useProgram(starProg);
