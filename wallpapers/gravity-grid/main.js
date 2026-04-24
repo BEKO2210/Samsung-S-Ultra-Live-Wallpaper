@@ -58,14 +58,30 @@ in float vViewDist;
 in float vY;
 out vec4 outColor;
 
-void main() {
-  // Exponential depth fog so distant lines melt into the void.
-  float fog  = exp(-vViewDist * 0.12);
-  float lum  = clamp(fog, 0.0, 1.0);
+uniform float uMaxDepth;   // typical deepest y (negative), used to normalize
 
-  // Subtle cyan baseline; future steps will shift color by depth (vY).
-  vec3 col = vec3(0.30, 0.70, 1.00) * 0.55 * lum;
-  outColor = vec4(col, lum);
+void main() {
+  // Depth of this vertex into the well (0 at surface, 1+ deep).
+  float t = clamp(-vY / uMaxDepth, 0.0, 1.4);
+
+  // Colour gradient — flat lattice reads cool cyan, deep wells slide
+  // through teal → magenta → warm-orange ("gravitational redshift"
+  // vibe). The surface colour is dim so the bright wells dominate.
+  vec3 surface  = vec3(0.28, 0.70, 1.00);
+  vec3 midWell  = vec3(0.55, 0.45, 1.00);
+  vec3 deepWell = vec3(1.00, 0.35, 0.55);
+  vec3 col = mix(surface, midWell, smoothstep(0.10, 0.60, t));
+  col      = mix(col,     deepWell, smoothstep(0.60, 1.10, t));
+
+  // Brightness rises with depth — wells glow because spacetime is
+  // more "compressed" there (lines get denser in screen space too).
+  float depthGain = 0.55 + 1.80 * smoothstep(0.0, 1.0, t);
+
+  // Exponential depth fog so distant lines melt into the void.
+  float fog = exp(-vViewDist * 0.11);
+
+  float lum = depthGain * fog;
+  outColor = vec4(col * lum, lum);
 }
 `;
 
@@ -127,6 +143,7 @@ function main() {
   const prog = link(gl, GRID_VS, GRID_FS);
   const u = uniformLocs(gl, prog, [
     'uProj', 'uView', 'uExtent', 'uSoften', 'uMassCount', 'uMasses',
+    'uMaxDepth',
   ]);
 
   const { verts, indices } = buildGrid(GRID_N);
@@ -203,6 +220,10 @@ function main() {
     gl.uniform1f(u.uSoften, SOFTEN);
     gl.uniform1i(u.uMassCount, masses.length);
     gl.uniform3fv(u.uMasses, massBuf);
+    // Deepest well we could plausibly hit: strongest mass sampled at its
+    // own center, y = −M / √ε. Used by the FS to normalize depth.
+    const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
+    gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
     gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_INT, 0);
   });
 }
