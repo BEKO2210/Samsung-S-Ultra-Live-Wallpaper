@@ -156,62 +156,97 @@ float fbm(vec2 p) {
 
 void main() {
   float r = length(vPlane);
-  if (r > 1.28) discard;
+  if (r > 1.30) discard;
 
   // Differential rotation (matches star VS so arm stars stay on ridges).
   float rotRate = 0.12 / (r * 1.2 + 0.22);
   float theta = atan(vPlane.y, vPlane.x) - uTime * rotRate;
 
-  // --- Spiral arms (log) — arms emerge from bar tips, not the origin.
-  float rArm = max(r - 0.09, 0.04);
-  float armPhase = theta - log(rArm + 0.05) / PITCH;
-  float armCos   = cos(ARMS * armPhase);
-  float dustCos  = cos(ARMS * armPhase - 0.55);
-  float hiiCos   = cos(ARMS * armPhase + 0.20);
+  // --- Domain warping of the arm coordinates.
+  // Straight log-spirals look geometric and dead; a small fbm-driven
+  // shift in both theta and r bends the arms into organic, photographic
+  // shapes like what you see on NGC 1232 / the 100,000 Stars background.
+  float nr = fbm(vPlane * 1.6);
+  float nt = fbm(vPlane * 1.6 + vec2(9.1, 3.7));
+  float warpedTheta = theta + 0.24 * (nt - 0.5);
+  float warpedR     = max(r + 0.05 * (nr - 0.5) - 0.09, 0.04);
+  float armPhase    = warpedTheta - log(warpedR + 0.05) / PITCH;
 
-  float armsBroad = pow(max(armCos * 0.5 + 0.5, 0.0), 2.0);
-  float armsRidge = pow(max(armCos, 0.0), 14.0);
-  float arms = (armsBroad * 0.45 + armsRidge * 0.80) * smoothstep(0.14, 0.32, r);
+  // Irregular dust lane: offset by a noise-dithered phase so lanes
+  // branch and break instead of marching in parallel with the arms.
+  float dustJitter = 0.22 * (fbm(vPlane * 4.5 + 31.0) - 0.5);
+  float armCos  = cos(ARMS * armPhase);
+  float dustCos = cos(ARMS * (armPhase - 0.55 + dustJitter));
+  float hiiCos  = cos(ARMS * (armPhase + 0.22 + 0.1 * (nt - 0.5)));
 
-  // Dust lanes inside arm ridges, faded at bar and rim.
-  float dust = pow(max(dustCos, 0.0), 22.0)
-             * smoothstep(0.20, 0.36, r)
-             * smoothstep(1.10, 0.55, r);
+  float armsBroad = pow(max(armCos * 0.5 + 0.5, 0.0), 1.7);
+  float armsRidge = pow(max(armCos, 0.0), 12.0);
+  float arms = (armsBroad * 0.55 + armsRidge * 0.65) * smoothstep(0.14, 0.34, r);
 
-  // --- Central bar: elongated warm glow at BAR_ANGLE.
+  // Multi-scale dust: broad lanes + fine streaks inside them.
+  float dustBroad   = pow(max(dustCos, 0.0), 14.0);
+  float dustStreaks = pow(fbm(vPlane * 9.0 + vec2(uTime * 0.04, 0.0)), 3.0);
+  float dust = dustBroad * (0.55 + 0.9 * dustStreaks)
+             * smoothstep(0.18, 0.32, r)
+             * smoothstep(1.15, 0.5, r);
+
+  // --- Bar + bulge + tight inner core + outer disk halo.
   float cb = cos(BAR_ANGLE), sb = sin(BAR_ANGLE);
   vec2  pBar = vec2(vPlane.x * cb + vPlane.y * sb,
                    -vPlane.x * sb + vPlane.y * cb);
-  float bar  = exp(-pow(pBar.x / 0.34, 4.0) - pow(pBar.y / 0.08, 4.0));
-  float bulge = exp(-r * 6.0);
-  float disk  = exp(-r * 1.8) * (1.0 - smoothstep(1.02, 1.26, r));
-  float base  = bulge * 1.4 + bar * 1.15 + disk * 0.55;
+  float bar   = exp(-pow(pBar.x / 0.34, 4.0) - pow(pBar.y / 0.085, 4.0));
+  float bulge = exp(-r * 5.2);                 // broad yellow bulge
+  float core  = exp(-r * 18.0) * 2.2;          // very bright nucleus
+  float halo  = exp(-r * 2.3) * 0.38;          // soft stellar haze
+  float disk  = exp(-r * 1.6) * (1.0 - smoothstep(1.05, 1.28, r)) * 0.55;
+  float base  = bulge * 1.1 + bar * 1.05 + core + halo + disk;
 
+  // Large-scale turbulence breaks the smooth radial density into clumps.
   vec2 turb = vec2(cos(theta), sin(theta)) * r;
-  float tn = fbm(turb * 3.6 + vec2(uTime * 0.015, 0.0));
-  float clumps = 0.55 + 0.9 * tn;
+  float tn  = fbm(turb * 3.2 + vec2(uTime * 0.015, 0.0));
+  float clumps = 0.60 + 0.85 * tn;
 
-  float density = base + arms * 1.7 * clumps;
-  density *= (1.0 - dust * 0.85);
+  // Interarm filler — a faint fbm-driven haze that fills the gaps so the
+  // galaxy reads continuous (NGC 1232's inter-arm dust has this).
+  float filler = fbm(vPlane * 2.2 + vec2(17.0, 4.0)) * 0.35
+               * smoothstep(1.18, 0.22, r);
+
+  float density = base + arms * 1.55 * clumps + filler;
+  density *= (1.0 - dust * 0.82);
   density = max(density, 0.0);
 
-  // HII (pink Hα) star-forming regions along outer arm tips.
-  float hiiArm   = pow(max(hiiCos, 0.0), 26.0);
-  float hiiRing  = smoothstep(0.30, 0.55, r) * (1.0 - smoothstep(0.92, 1.15, r));
-  float hiiNoise = pow(fbm(vPlane * 7.2 + 11.0), 2.2);
-  float hii = hiiArm * hiiRing * hiiNoise * 2.2;
+  // HII (Hα) star-forming regions — small pink knots along arm ridges.
+  float hiiArm   = pow(max(hiiCos, 0.0), 22.0);
+  float hiiRing  = smoothstep(0.30, 0.55, r) * (1.0 - smoothstep(0.95, 1.18, r));
+  float hiiNoise = pow(fbm(vPlane * 8.5 + 11.0), 2.4);
+  float hii = hiiArm * hiiRing * hiiNoise * 1.4;
 
-  // Colour ramp: warm yellow bar/bulge → white mid-disk → blue outer rim.
-  vec3 warm  = vec3(1.00, 0.78, 0.42);
-  vec3 mid   = vec3(0.94, 0.92, 1.00);
-  vec3 outer = vec3(0.55, 0.72, 1.10);
-  vec3 pink  = vec3(1.00, 0.45, 0.72);
-  vec3 color = mix(mid, outer, smoothstep(0.3, 0.98, r));
-  color = mix(color, warm, smoothstep(0.55, 0.0, r));
+  // Soft, photographic palette — less neon than before.
+  vec3 warm  = vec3(1.00, 0.76, 0.44);    // bulge / bar
+  vec3 mid   = vec3(0.95, 0.93, 1.00);    // arm ridge
+  vec3 outer = vec3(0.66, 0.80, 1.12);    // cool blue rim
+  vec3 dustC = vec3(0.45, 0.25, 0.15);    // warm-brown dust tint
+  vec3 pink  = vec3(1.00, 0.56, 0.78);    // Hα (softer than before)
+
+  vec3 color = mix(mid, outer, smoothstep(0.35, 1.02, r));
+  color = mix(color, warm, smoothstep(0.60, 0.0, r));
+  // Dust doesn't just darken — it also tints with warm red-brown
+  // reflection nebulosity, just like photographs of grand-design spirals.
+  color = mix(color, dustC, dust * 0.35);
   color += pink * hii;
 
-  float edgeFade = smoothstep(1.22, 0.55, r);
-  vec3 emit = color * density * edgeFade * 0.95;
+  // Tone-mapped exposure — prevents blown-out highlights at the core.
+  vec3 emit = color * density;
+  emit = 1.0 - exp(-emit * 1.05);
+
+  // Wider edge fade so the outer haze dissolves smoothly into space.
+  float edgeFade = smoothstep(1.25, 0.35, r);
+  emit *= edgeFade;
+
+  // Tiny dither to combat OLED banding in the faint outer haze.
+  float dither = (hash(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
+  emit += vec3(dither);
+
   outColor = vec4(emit, 1.0);
 }
 `;
