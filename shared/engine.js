@@ -185,41 +185,13 @@ export function mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz, out = new Float32
   return out;
 }
 
-// Render-to-texture target. Call `resize(w, h)` whenever the viewport
-// changes; it lazily (re)allocates an RGBA8 color texture and FBO. Useful
-// for post-effects that need to sample the scene (e.g. gravitational
-// lensing of the galaxy fog around a black hole).
-export function createRenderTarget(gl) {
-  const tex = gl.createTexture();
-  const fbo = gl.createFramebuffer();
-  let w = 0, h = 0;
-
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D, tex, 0);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-  return {
-    tex, fbo,
-    get width() { return w; },
-    get height() { return h; },
-    resize(nw, nh) {
-      if (nw === w && nh === h) return;
-      w = nw; h = nh;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
-        w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    },
-    bind() {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-      gl.viewport(0, 0, w, h);
-    },
-  };
+// Fade the initial `#hud` label (wallpaper title) away a few seconds
+// after load so the render stays unobstructed.
+export function fadeHud() {
+  const hud = document.getElementById('hud');
+  if (!hud) return;
+  hud.style.transition = 'opacity 1.8s ease 2.5s';
+  requestAnimationFrame(() => { hud.style.opacity = '0'; });
 }
 
 // Catches throws from a wallpaper entry and shows them on screen without

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
+<meta name="theme-color" content="#000000" />
+<title>Gravity Grid — Live Wallpaper</title>
+<link rel="stylesheet" href="../../shared/style.css" />
+<style>
+  :root {
+    --download-gradient:
+      linear-gradient(135deg, rgba(80, 180, 255, 0.18), rgba(160, 90, 255, 0.15));
+  }
+</style>
+</head>
+<body>
+<div class="hud" id="hud">Gravity Grid</div>
+
+<button class="info-btn" id="info-open" aria-label="Info">i</button>
+
+<div class="info-panel" id="info-panel" role="dialog" aria-modal="true" aria-label="Wallpaper installieren">
+  <button class="close-btn" id="info-close" aria-label="Schließen">×</button>
+  <div class="info-card">
+    <h1>Gravity Grid</h1>
+    <p class="sub">Raumzeit-Krümmung · WebGL2</p>
+
+    <p>Ein 180×180-Raumzeitgitter wird von bis zu fünf unsichtbaren
+    Massen eingedrückt — Einsteins Raumzeit als Flamm-Paraboloid in
+    Echtzeit. Jede Masse bildet einen Trichter nach
+    <code>y = −M / √(r² + ε²)</code>; überlappende Brunnen verschmelzen
+    glatt. Die Gitterfarbe läuft mit der Tiefe von cyan (flach) über
+    violett zu magenta-rot (tief) — wie eine Gravitations-Rotverschiebung
+    in Falschfarben. Ein Hintergrund-Sternenhimmel mit 2400 Sternen
+    auf einer kamera-lokalen Sphäre verankert die Perspektive.</p>
+
+    <a class="download" href="./wallpaper.html" download="gravity-grid-wallpaper.html">
+      ⬇ Wallpaper herunterladen (eine Datei)
+      <small>wallpaper.html · offline · WebGL2</small>
+    </a>
+
+    <h2>Als Samsung-Wallpaper verwenden</h2>
+    <ol>
+      <li><b>Video-Wallpaper:</b> Seite im Vollbild öffnen, mit Android-
+      Bildschirmrekorder 15–30 Sek. aufnehmen, dann <i>Einstellungen →
+      Hintergrund und Stil → Galerie</i> und das Video wählen.</li>
+      <li><b>Live-HTML-Wallpaper:</b> App wie <i>„HTML Live Wallpaper"</i>
+      oder <i>„Web Page Live Wallpaper"</i> installieren, lokale
+      <code>wallpaper.html</code> auswählen.</li>
+      <li><b>Als PWA:</b> In Samsung Internet oder Chrome öffnen →
+      Menü → <i>„Zur Startseite hinzufügen"</i>.</li>
+      <li><b>Am PC:</b> <code>wallpaper.html</code> doppelklicken.</li>
+    </ol>
+  </div>
+</div>
+
+<script type="module" src="./main.js"></script>
+<script>
+  const openBtn = document.getElementById('info-open');
+  const closeBtn = document.getElementById('info-close');
+  const panel = document.getElementById('info-panel');
+  openBtn.addEventListener('click', () => panel.classList.add('open'));
+  closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+  panel.addEventListener('click', (e) => {
+    if (e.target === panel) panel.classList.remove('open');
+  });
+</script>
+</body>
+</html>

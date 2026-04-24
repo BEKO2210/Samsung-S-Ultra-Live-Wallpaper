@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
 <meta name="theme-color" content="#000000" />
-<title>Milky Way — Live Wallpaper</title>
+<title>Gravity Grid — Live Wallpaper</title>
 <style>
 html, body {
   margin: 0;
@@ -147,10 +147,15 @@ canvas {
 }
 
 
+  :root {
+    --download-gradient:
+      linear-gradient(135deg, rgba(80, 180, 255, 0.18), rgba(160, 90, 255, 0.15));
+  }
+
 </style>
 </head>
 <body>
-<div class="hud" id="hud">Milky Way</div>
+<div class="hud" id="hud">Gravity Grid</div>
 <script>
 (function () {
 const __engine = (() => {
@@ -368,75 +373,126 @@ function runWallpaper(mainFn) {
 return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, fadeHud, runWallpaper };
 })();
 const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, fadeHud, mat4Perspective, mat4LookAt } = __engine;
-// Textbook / planetarium view of the Milky Way: a barred spiral (SBbc)
-// seen nearly face-on, 4 major arms, central bar, dust lanes, halo
-// globular clusters. No black hole, no lensing — just the galaxy.
-const STAR_COUNT      = 180000;
-const ARMS            = 4;            // Milky Way has 4 major arms
-const BULGE_FRACTION  = 0.18;
-const HALO_FRACTION   = 0.14;         // off-plane globular-cluster halo
-const ARM_SPREAD      = 0.14;
-const DISK_THICKNESS  = 0.028;
-const FOG_QUAD_RADIUS = 1.40;
-const BAR_ANGLE       = 0.44;         // ≈25° — Milky Way bar orientation
+// Spacetime grid — a square mesh in the xz plane rendered as GL_LINES.
+// Up to MAX_MASSES invisible point masses deflect every vertex downward
+// by the softened-Newtonian profile y = −M / √(r² + ε²). The sum over
+// masses gives the Flamm-paraboloid embedding look.
+const GRID_N      = 180;              // vertices per side → (N−1)² cells
+const GRID_EXTENT = 5.5;              // world-unit half-width
+const MAX_MASSES  = 5;                // hard cap — also GLSL array size
+const SOFTEN      = 0.06;             // ε² in Newtonian softening
+const STAR_COUNT  = 2400;             // sphere-distributed background stars
 
-const STAR_VS = /* glsl */ `#version 300 es
+const GRID_VS = /* glsl */ `#version 300 es
 precision highp float;
 
-#define ARMS ${ARMS}
-#define SPIRAL_PITCH 0.42
-#define GALAXY_RADIUS 1.0
-#define BAR_HALF 0.22                 // arms start outside the bar tips
-#define TAU 6.28318530718
+#define MAX_MASSES ${MAX_MASSES}
 
-layout(location = 0) in float aRadius;
-layout(location = 1) in float aAngle;
-layout(location = 2) in float aArm;
-layout(location = 3) in float aZ;
-layout(location = 4) in vec3  aColor;
-layout(location = 5) in float aSize;
-layout(location = 6) in float aTwinkle;
-layout(location = 7) in float aKind;  // 0 = disk, 1 = halo / globular
+layout(location = 0) in vec2 aXZ;     // vertex grid coord in [-1..1]
 
 uniform mat4  uProj;
 uniform mat4  uView;
-uniform float uTime;
-uniform float uPixelScale;
-uniform vec2  uParallax;
+uniform float uExtent;
+uniform float uSoften;
+uniform int   uMassCount;
+// Each mass: (x, z, strength) in world units / world units / unitless.
+uniform vec3  uMasses[MAX_MASSES];
 
-out vec3  vColor;
-out float vBrightness;
+out float vViewDist;
+out float vY;
 
 void main() {
-  // Differential rotation matching the fog. Halo stars rotate very slowly
-  // (pressure-supported population).
-  float rotSpeed = (aKind > 0.5)
-    ? 0.02
-    : 0.12 / (aRadius * 1.2 + 0.22);
+  vec2 xz = aXZ * uExtent;
 
-  // Arms emerge from the tips of the bar, not the very center, so pin
-  // the spiral phase to aRadius - BAR_HALF (clamped to keep log finite).
-  float rArm = max(aRadius - BAR_HALF * 0.4, 0.04);
-  float spiralOffset = log(rArm + 0.05) / SPIRAL_PITCH;
-  float armBase = aArm * (TAU / float(ARMS)) + spiralOffset;
-  float angle = armBase + aAngle + uTime * rotSpeed;
+  // Sum softened wells. Loop is bounded so WebGL2 unrolls it cleanly
+  // on mobile GPUs. Break once we pass the active count.
+  float y = 0.0;
+  for (int i = 0; i < MAX_MASSES; i++) {
+    if (i >= uMassCount) break;
+    vec2 dp = xz - uMasses[i].xy;
+    float r2 = dot(dp, dp) + uSoften;
+    y -= uMasses[i].z / sqrt(r2);
+  }
 
-  float r = aRadius * GALAXY_RADIUS;
-  vec3 pos = vec3(cos(angle) * r, aZ, sin(angle) * r);
-  pos.xy += uParallax * 0.025;
+  vec4 viewPos = uView * vec4(xz.x, y, xz.y, 1.0);
+  vY = y;
+  vViewDist = -viewPos.z;
+  gl_Position = uProj * viewPos;
+}
+`;
 
+const GRID_FS = /* glsl */ `#version 300 es
+precision highp float;
+
+in float vViewDist;
+in float vY;
+out vec4 outColor;
+
+uniform float uMaxDepth;   // typical deepest y (negative), used to normalize
+
+void main() {
+  // Depth of this vertex into the well (0 at surface, 1+ deep).
+  float t = clamp(-vY / uMaxDepth, 0.0, 1.4);
+
+  // Colour gradient — flat lattice reads cool cyan, deep wells slide
+  // through teal → magenta → warm-orange ("gravitational redshift"
+  // vibe). The surface colour is dim so the bright wells dominate.
+  vec3 surface  = vec3(0.28, 0.70, 1.00);
+  vec3 midWell  = vec3(0.55, 0.45, 1.00);
+  vec3 deepWell = vec3(1.00, 0.35, 0.55);
+  vec3 col = mix(surface, midWell, smoothstep(0.10, 0.60, t));
+  col      = mix(col,     deepWell, smoothstep(0.60, 1.10, t));
+
+  // Brightness rises with depth — wells glow because spacetime is
+  // more "compressed" there (lines get denser in screen space too).
+  float depthGain = 0.55 + 1.80 * smoothstep(0.0, 1.0, t);
+
+  // Exponential depth fog so distant lines melt into the void.
+  float fog = exp(-vViewDist * 0.11);
+
+  float lum = depthGain * fog;
+  outColor = vec4(col * lum, lum);
+}
+`;
+
+// Distant starfield drawn as GL_POINTS on a sphere centered on the
+// camera. We subtract the camera position in the VS so the stars stay
+// locked to the sky and don't move with the grid — pure parallax
+// background, no gravity deflection.
+const STAR_VS = /* glsl */ `#version 300 es
+precision highp float;
+
+layout(location = 0) in vec3  aDir;    // unit direction in world space
+layout(location = 1) in float aSize;
+layout(location = 2) in float aColor;  // stellar class: 0 blue → 1 red
+layout(location = 3) in float aTwinkle;
+
+uniform mat4  uProj;
+uniform mat4  uView;
+uniform float uPixelScale;
+uniform float uTime;
+uniform float uSphereRadius;
+uniform vec3  uCamPos;
+
+out vec3  vColor;
+out float vAlpha;
+
+void main() {
+  vec3 pos = uCamPos + aDir * uSphereRadius;
   vec4 viewPos = uView * vec4(pos, 1.0);
-  gl_Position  = uProj * viewPos;
+  gl_Position = uProj * viewPos;
 
-  float dist = max(-viewPos.z, 0.25);
-  gl_PointSize = clamp(aSize * uPixelScale / dist, 1.0, 48.0);
+  gl_PointSize = clamp(aSize * uPixelScale, 1.0, 8.0);
 
-  float tw = 0.82 + 0.18 * sin(uTime * 2.1 + aTwinkle * TAU);
-  float edgeFade = smoothstep(1.05, 0.78, aRadius);
-  float nearFade = smoothstep(0.15, 0.4, dist);
+  vec3 hot  = vec3(0.70, 0.82, 1.10);    // O/B
+  vec3 warm = vec3(1.00, 0.88, 0.65);    // G
+  vec3 cool = vec3(1.00, 0.55, 0.40);    // M
+  vec3 c = mix(hot, warm, smoothstep(0.0, 0.6, aColor));
+  c      = mix(c,   cool, smoothstep(0.6, 1.0, aColor));
+  vColor = c;
 
-  vColor = aColor;
-  vBrightness = tw * edgeFade * nearFade;
+  float tw = 0.75 + 0.25 * sin(uTime * 2.0 + aTwinkle * 6.283);
+  vAlpha = tw * 0.75;
 }
 `;
 
@@ -444,277 +500,139 @@ const STAR_FS = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec3  vColor;
-in float vBrightness;
+in float vAlpha;
 out vec4 outColor;
 
 void main() {
   vec2 uv = gl_PointCoord - 0.5;
   float d2 = dot(uv, uv) * 4.0;
   if (d2 > 1.0) discard;
-  float core = exp(-d2 * 6.5);
-  float halo = exp(-d2 * 1.6) * 0.35;
-  float a = (core + halo) * vBrightness;
+  float core = exp(-d2 * 7.0);
+  float halo = exp(-d2 * 1.5) * 0.30;
+  float a = (core + halo) * vAlpha;
   outColor = vec4(vColor * a, a);
 }
 `;
 
-// Procedural barred-spiral galaxy fog, drawn on a quad in the xz plane.
-// 4 logarithmic arms, a central bar rotated by BAR_ANGLE, dust lanes,
-// and pink HII regions along the outer arms. This is what a textbook
-// Milky Way diagram looks like.
-const FOG_VS = /* glsl */ `#version 300 es
-precision highp float;
-layout(location = 0) in vec2 aPos;
-uniform mat4 uProj;
-uniform mat4 uView;
-uniform float uQuadRadius;
-uniform vec2  uParallax;
-out vec2  vPlane;
-out float vViewZ;
-void main() {
-  vec2 xz = aPos * uQuadRadius;
-  vec3 world = vec3(xz.x, 0.0, xz.y);
-  world.xy += uParallax * 0.025;
-  vec4 viewPos = uView * vec4(world, 1.0);
-  vPlane = xz;
-  vViewZ = -viewPos.z;
-  gl_Position = uProj * viewPos;
-}
-`;
-
-const FOG_FS = /* glsl */ `#version 300 es
-precision highp float;
-
-#define ARMS 4.0
-#define PITCH 0.42
-#define BAR_ANGLE ${BAR_ANGLE.toFixed(5)}
-#define TAU 6.28318530718
-
-in vec2  vPlane;
-in float vViewZ;
-uniform float uTime;
-out vec4 outColor;
-
-float hash(vec2 p) {
-  p = fract(p * vec2(127.1, 311.7));
-  p += dot(p, p + 19.19);
-  return fract(p.x * p.y);
-}
-float vnoise(vec2 p) {
-  vec2 i = floor(p), f = fract(p);
-  float a = hash(i);
-  float b = hash(i + vec2(1.0, 0.0));
-  float c = hash(i + vec2(0.0, 1.0));
-  float d = hash(i + vec2(1.0, 1.0));
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-float fbm(vec2 p) {
-  float s = 0.0, a = 0.5;
-  for (int i = 0; i < 5; i++) {
-    s += a * vnoise(p);
-    p *= 2.03; a *= 0.5;
-  }
-  return s;
-}
-
-void main() {
-  float r = length(vPlane);
-  if (r > 1.28) discard;
-
-  // Differential rotation (matches star VS so arm stars stay on ridges).
-  float rotRate = 0.12 / (r * 1.2 + 0.22);
-  float theta = atan(vPlane.y, vPlane.x) - uTime * rotRate;
-
-  // --- Spiral arms (log) — arms emerge from bar tips, not the origin.
-  float rArm = max(r - 0.09, 0.04);
-  float armPhase = theta - log(rArm + 0.05) / PITCH;
-  float armCos   = cos(ARMS * armPhase);
-  float dustCos  = cos(ARMS * armPhase - 0.55);
-  float hiiCos   = cos(ARMS * armPhase + 0.20);
-
-  float armsBroad = pow(max(armCos * 0.5 + 0.5, 0.0), 2.0);
-  float armsRidge = pow(max(armCos, 0.0), 14.0);
-  float arms = (armsBroad * 0.45 + armsRidge * 0.80) * smoothstep(0.14, 0.32, r);
-
-  // Dust lanes inside arm ridges, faded at bar and rim.
-  float dust = pow(max(dustCos, 0.0), 22.0)
-             * smoothstep(0.20, 0.36, r)
-             * smoothstep(1.10, 0.55, r);
-
-  // --- Central bar: elongated warm glow at BAR_ANGLE.
-  float cb = cos(BAR_ANGLE), sb = sin(BAR_ANGLE);
-  vec2  pBar = vec2(vPlane.x * cb + vPlane.y * sb,
-                   -vPlane.x * sb + vPlane.y * cb);
-  float bar  = exp(-pow(pBar.x / 0.34, 4.0) - pow(pBar.y / 0.08, 4.0));
-  float bulge = exp(-r * 6.0);
-  float disk  = exp(-r * 1.8) * (1.0 - smoothstep(1.02, 1.26, r));
-  float base  = bulge * 1.4 + bar * 1.15 + disk * 0.55;
-
-  vec2 turb = vec2(cos(theta), sin(theta)) * r;
-  float tn = fbm(turb * 3.6 + vec2(uTime * 0.015, 0.0));
-  float clumps = 0.55 + 0.9 * tn;
-
-  float density = base + arms * 1.7 * clumps;
-  density *= (1.0 - dust * 0.85);
-  density = max(density, 0.0);
-
-  // HII (pink Hα) star-forming regions along outer arm tips.
-  float hiiArm   = pow(max(hiiCos, 0.0), 26.0);
-  float hiiRing  = smoothstep(0.30, 0.55, r) * (1.0 - smoothstep(0.92, 1.15, r));
-  float hiiNoise = pow(fbm(vPlane * 7.2 + 11.0), 2.2);
-  float hii = hiiArm * hiiRing * hiiNoise * 2.2;
-
-  // Colour ramp: warm yellow bar/bulge → white mid-disk → blue outer rim.
-  vec3 warm  = vec3(1.00, 0.78, 0.42);
-  vec3 mid   = vec3(0.94, 0.92, 1.00);
-  vec3 outer = vec3(0.55, 0.72, 1.10);
-  vec3 pink  = vec3(1.00, 0.45, 0.72);
-  vec3 color = mix(mid, outer, smoothstep(0.3, 0.98, r));
-  color = mix(color, warm, smoothstep(0.55, 0.0, r));
-  color += pink * hii;
-
-  float edgeFade = smoothstep(1.22, 0.55, r);
-  vec3 emit = color * density * edgeFade * 0.95;
-  outColor = vec4(emit, 1.0);
-}
-`;
-
-function mixColor(a, b, t) {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-}
-
-function gaussian() {
-  let u = 0, v = 0;
-  while (u === 0) u = Math.random();
-  while (v === 0) v = Math.random();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
+// Uniformly-distributed directions on the unit sphere (Marsaglia).
 function buildStars(count) {
-  const radius  = new Float32Array(count);
-  const angle   = new Float32Array(count);
-  const arm     = new Float32Array(count);
-  const zOff    = new Float32Array(count);
-  const color   = new Float32Array(count * 3);
+  const dir     = new Float32Array(count * 3);
   const size    = new Float32Array(count);
+  const color   = new Float32Array(count);
   const twinkle = new Float32Array(count);
-  const kind    = new Float32Array(count);  // 0 disk, 1 halo
-
-  const CORE_YELLOW = [1.00, 0.82, 0.52];
-  const HOT_WHITE   = [0.90, 0.94, 1.00];
-  const BLUE_GIANT  = [0.55, 0.72, 1.00];
-  const YOUNG_BLUE  = [0.70, 0.80, 1.10];
-  const DUST_RED    = [1.00, 0.55, 0.40];
-  const GLOBULAR    = [1.00, 0.90, 0.65];
-
-  const bulgeCount = Math.floor(count * BULGE_FRACTION);
-  const haloStart  = Math.floor(count * (1.0 - HALO_FRACTION));
-
   for (let i = 0; i < count; i++) {
-    const inBulge = i < bulgeCount;
-    const inHalo  = i >= haloStart;
-    const u = Math.random();
-
-    let r;
-    if (inBulge) {
-      // Bar-dominated core: clustered near centre, slightly elongated.
-      r = 0.02 + Math.pow(u, 1.6) * 0.26;
-    } else if (inHalo) {
-      // Halo: broad, extends well past the disk for globular clusters.
-      r = 0.35 + Math.pow(u, 0.55) * 0.95;
-    } else {
-      r = 0.24 + Math.pow(u, 0.7) * 0.80;
-    }
-    radius[i] = Math.min(r, 1.25);
-
-    arm[i] = Math.floor(Math.random() * ARMS);
-    const spread = inHalo
-      ? 3.14                             // halo stars are isotropic
-      : ARM_SPREAD * (1.0 - 0.55 * Math.min(radius[i], 1.0));
-    angle[i] = gaussian() * spread;
-
-    // Thick halo, thin disk — matches observed galactic structure.
-    const bulgeBoost = Math.exp(-radius[i] * 6.0);
-    if (inHalo) {
-      zOff[i] = gaussian() * 0.22;
-    } else {
-      zOff[i] = gaussian() * DISK_THICKNESS * (1.0 + bulgeBoost * 4.0);
-    }
-
-    let c;
-    if (inHalo) {
-      // Old stellar population: yellow / orange.
-      c = mixColor(GLOBULAR, DUST_RED, Math.random() * 0.35);
-    } else if (inBulge) {
-      c = mixColor(CORE_YELLOW, DUST_RED, Math.random() * 0.45);
-    } else if (radius[i] > 0.55 && Math.random() < 0.22) {
-      c = mixColor(YOUNG_BLUE, BLUE_GIANT, Math.random());
-    } else if (radius[i] > 0.82 && Math.random() < 0.15) {
-      c = mixColor(DUST_RED, CORE_YELLOW, Math.random() * 0.4);
-    } else if (Math.random() < 0.05) {
-      c = BLUE_GIANT.slice();
-    } else {
-      c = mixColor(HOT_WHITE, BLUE_GIANT, Math.random() * 0.45);
-    }
-
-    const lum = 0.55 + Math.random() * 0.55;
-    color[i * 3 + 0] = c[0] * lum;
-    color[i * 3 + 1] = c[1] * lum;
-    color[i * 3 + 2] = c[2] * lum;
-
-    let s = 1.0 + Math.random() * 1.1;
-    if (!inHalo && Math.random() < 0.010) s += 2.0 + Math.random() * 2.8;
-    if (inHalo && Math.random() < 0.05) s += 1.8; // brighter globular cores
-    if (inBulge) s *= 0.85;
-    if (inHalo)  s *= 0.85;
-    size[i] = s;
-
+    let x, y, s;
+    do {
+      x = Math.random() * 2 - 1;
+      y = Math.random() * 2 - 1;
+      s = x * x + y * y;
+    } while (s >= 1);
+    const f = 2 * Math.sqrt(1 - s);
+    dir[i * 3]     = x * f;
+    dir[i * 3 + 1] = 1 - 2 * s;
+    dir[i * 3 + 2] = y * f;
+    // Rare bright stars, majority faint.
+    size[i]    = 0.9 + (Math.random() < 0.03 ? Math.random() * 3.5 : Math.random() * 1.4);
+    color[i]   = Math.random();
     twinkle[i] = Math.random();
-    kind[i]    = inHalo ? 1.0 : 0.0;
+  }
+  return { dir, size, color, twinkle };
+}
+
+// Build an indexed line list over an N×N lattice. N ≤ 255 so the largest
+// index fits in a Uint16 (65 535); larger grids need Uint32.
+function buildGrid(n) {
+  if (n * n > 65535) throw new Error('buildGrid: N too large for Uint16 indices');
+  const verts = new Float32Array(n * n * 2);
+  for (let j = 0; j < n; j++) {
+    const v = (j / (n - 1)) * 2.0 - 1.0;
+    for (let i = 0; i < n; i++) {
+      const u = (i / (n - 1)) * 2.0 - 1.0;
+      const k = (j * n + i) * 2;
+      verts[k]     = u;
+      verts[k + 1] = v;
+    }
   }
 
-  return { radius, angle, arm, zOff, color, size, twinkle, kind };
+  // 2·N·(N−1) segments · 2 indices/segment.
+  const indices = new Uint16Array(4 * n * (n - 1));
+  let p = 0;
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      indices[p++] = j * n + i;
+      indices[p++] = j * n + i + 1;
+    }
+  }
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n; i++) {
+      indices[p++] = j * n + i;
+      indices[p++] = (j + 1) * n + i;
+    }
+  }
+
+  return { verts, indices };
+}
+
+// Each mass orbits on its own slow ellipse with an independent phase.
+// Strengths and periods are randomized so the grid feels alive without
+// any clear rhythm. Positions are regenerated once; only their
+// time-evaluated x/z change every frame.
+function buildMasses(count) {
+  const m = [];
+  for (let i = 0; i < count; i++) {
+    m.push({
+      ax:     1.8 + Math.random() * 2.2,          // semi-major in x
+      az:     1.6 + Math.random() * 2.0,          // semi-major in z
+      phase:  Math.random() * Math.PI * 2,
+      speed:  0.10 + Math.random() * 0.18,
+      skew:   (Math.random() - 0.5) * 0.8,        // rotates the ellipse
+      strength: 0.45 + Math.random() * 0.55,      // well depth M
+    });
+  }
+  return m;
 }
 
 function main() {
   const { canvas, gl } = createCanvas();
 
-  // --- Stars ---
+  const prog = link(gl, GRID_VS, GRID_FS);
+  const u = uniformLocs(gl, prog, [
+    'uProj', 'uView', 'uExtent', 'uSoften', 'uMassCount', 'uMasses',
+    'uMaxDepth',
+  ]);
+
+  // --- Background starfield program ---
   const starProg = link(gl, STAR_VS, STAR_FS);
   const su = uniformLocs(gl, starProg, [
-    'uProj', 'uView', 'uTime', 'uPixelScale', 'uParallax',
+    'uProj', 'uView', 'uPixelScale', 'uTime', 'uSphereRadius', 'uCamPos',
   ]);
   const stars = buildStars(STAR_COUNT);
   const starVao = gl.createVertexArray();
   gl.bindVertexArray(starVao);
-  uploadAttrib(gl, 0, stars.radius,  1);
-  uploadAttrib(gl, 1, stars.angle,   1);
-  uploadAttrib(gl, 2, stars.arm,     1);
-  uploadAttrib(gl, 3, stars.zOff,    1);
-  uploadAttrib(gl, 4, stars.color,   3);
-  uploadAttrib(gl, 5, stars.size,    1);
-  uploadAttrib(gl, 6, stars.twinkle, 1);
-  uploadAttrib(gl, 7, stars.kind,    1);
+  uploadAttrib(gl, 0, stars.dir,     3);
+  uploadAttrib(gl, 1, stars.size,    1);
+  uploadAttrib(gl, 2, stars.color,   1);
+  uploadAttrib(gl, 3, stars.twinkle, 1);
 
-  // --- Galaxy fog plane (drawn behind stars) ---
-  const fogProg = link(gl, FOG_VS, FOG_FS);
-  const fu = uniformLocs(gl, fogProg, [
-    'uProj', 'uView', 'uTime', 'uQuadRadius', 'uParallax',
-  ]);
-  const fogVao = gl.createVertexArray();
-  gl.bindVertexArray(fogVao);
-  const fogBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, fogBuf);
-  gl.bufferData(gl.ARRAY_BUFFER,
-    new Float32Array([-1, -1,  1, -1,  -1, 1,  -1, 1,  1, -1,  1, 1]),
-    gl.STATIC_DRAW);
+  const { verts, indices } = buildGrid(GRID_N);
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
   gl.clearColor(0, 0, 0, 1);
   gl.disable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
 
   const proj = new Float32Array(16);
   const view = new Float32Array(16);
@@ -722,55 +640,73 @@ function main() {
 
   onResize(canvas, (size) => {
     gl.viewport(0, 0, size.width, size.height);
-    const aspect = size.width / size.height;
-    mat4Perspective(Math.PI / 3.4, aspect, 0.05, 12.0, proj);
-    pixelScale = size.height * 0.0018;
+    // Far plane 80 gives us room for the star sphere at radius 30.
+    mat4Perspective(Math.PI / 3.2, size.width / size.height, 0.05, 80.0, proj);
+    pixelScale = size.height * 0.0016;
   });
 
   const input = createInput();
-  // Textbook face-on view: camera high above the disk, slight yaw drift
-  // so the arms visibly rotate. Distance keeps the whole galaxy in frame
-  // on a portrait aspect.
-  const cam = { distance: 2.65, tilt: 1.05 };
+  const cam = { distance: 7.0, tilt: 0.95, yaw: 0 };
 
-  // Constants — uploaded once. Additive blending is shared by both passes.
-  gl.useProgram(fogProg);
-  gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
-  gl.blendFunc(gl.ONE, gl.ONE);
+  const masses = buildMasses(MAX_MASSES);
+  // Packed (x, z, strength) for each mass, uploaded via uniform3fv.
+  const massBuf = new Float32Array(MAX_MASSES * 3);
+
+  // Constants — uploaded once. uMaxDepth's bound is the strongest well
+  // sampled at its own centre: y = −M / √ε.
+  const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
+  gl.useProgram(prog);
+  gl.uniform1f(u.uExtent,   GRID_EXTENT);
+  gl.uniform1f(u.uSoften,   SOFTEN);
+  gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
+  gl.uniform1i(u.uMassCount, masses.length);
+  gl.useProgram(starProg);
+  gl.uniform1f(su.uSphereRadius, 30.0);
 
   fadeHud();
 
   startLoop((dt, t) => {
     input.update(dt);
 
-    const yaw  = t * 0.025 + input.x * 0.12;
-    const tilt = cam.tilt + input.y * 0.05;
+    const yaw  = t * 0.04 + input.x * 0.22;
+    const tilt = cam.tilt + input.y * 0.08;
     const cosT = Math.cos(tilt);
     const ex = Math.sin(yaw) * cosT * cam.distance;
     const ey = Math.sin(tilt)       * cam.distance;
     const ez = Math.cos(yaw) * cosT * cam.distance;
     mat4LookAt(ex, ey, ez, 0, 0, 0, 0, 1, 0, view);
 
+    // Evaluate each mass's elliptical orbit and pack for the shader.
+    for (let i = 0; i < masses.length; i++) {
+      const m = masses[i];
+      const phi = m.phase + t * m.speed;
+      const cs = Math.cos(m.skew), sn = Math.sin(m.skew);
+      const x0 = Math.cos(phi) * m.ax;
+      const z0 = Math.sin(phi) * m.az;
+      massBuf[i * 3]     = x0 * cs - z0 * sn;
+      massBuf[i * 3 + 1] = x0 * sn + z0 * cs;
+      massBuf[i * 3 + 2] = m.strength;
+    }
+
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // --- Pass 1: galaxy fog plane (additive) ---
-    gl.useProgram(fogProg);
-    gl.bindVertexArray(fogVao);
-    gl.uniformMatrix4fv(fu.uProj, false, proj);
-    gl.uniformMatrix4fv(fu.uView, false, view);
-    gl.uniform1f(fu.uTime, t);
-    gl.uniform2f(fu.uParallax, input.x, input.y);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-    // --- Pass 2: stars (additive) ---
+    // --- Pass 0: distant starfield (additive, locked to camera) ---
     gl.useProgram(starProg);
     gl.bindVertexArray(starVao);
     gl.uniformMatrix4fv(su.uProj, false, proj);
     gl.uniformMatrix4fv(su.uView, false, view);
-    gl.uniform1f(su.uTime, t);
     gl.uniform1f(su.uPixelScale, pixelScale);
-    gl.uniform2f(su.uParallax, input.x, input.y);
+    gl.uniform1f(su.uTime, t);
+    gl.uniform3f(su.uCamPos, ex, ey, ez);
     gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
+
+    // --- Pass 1: spacetime grid ---
+    gl.useProgram(prog);
+    gl.bindVertexArray(vao);
+    gl.uniformMatrix4fv(u.uProj, false, proj);
+    gl.uniformMatrix4fv(u.uView, false, view);
+    gl.uniform3fv(u.uMasses, massBuf);
+    gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_SHORT, 0);
   });
 }
 

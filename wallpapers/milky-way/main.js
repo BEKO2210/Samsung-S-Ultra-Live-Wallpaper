@@ -1,6 +1,6 @@
 import {
   createCanvas, onResize, startLoop, createInput,
-  link, uniformLocs, uploadAttrib, runWallpaper,
+  link, uniformLocs, uploadAttrib, runWallpaper, fadeHud,
   mat4Perspective, mat4LookAt,
 } from '../../shared/engine.js';
 
@@ -369,11 +369,12 @@ function main() {
   // on a portrait aspect.
   const cam = { distance: 2.65, tilt: 1.05 };
 
-  const hud = document.getElementById('hud');
-  if (hud) {
-    hud.style.transition = 'opacity 1.8s ease 2.5s';
-    requestAnimationFrame(() => { hud.style.opacity = '0'; });
-  }
+  // Constants — uploaded once. Additive blending is shared by both passes.
+  gl.useProgram(fogProg);
+  gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
+  gl.blendFunc(gl.ONE, gl.ONE);
+
+  fadeHud();
 
   startLoop((dt, t) => {
     input.update(dt);
@@ -391,18 +392,15 @@ function main() {
     // --- Pass 1: galaxy fog plane (additive) ---
     gl.useProgram(fogProg);
     gl.bindVertexArray(fogVao);
-    gl.blendFunc(gl.ONE, gl.ONE);
     gl.uniformMatrix4fv(fu.uProj, false, proj);
     gl.uniformMatrix4fv(fu.uView, false, view);
     gl.uniform1f(fu.uTime, t);
-    gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
     gl.uniform2f(fu.uParallax, input.x, input.y);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     // --- Pass 2: stars (additive) ---
     gl.useProgram(starProg);
     gl.bindVertexArray(starVao);
-    gl.blendFunc(gl.ONE, gl.ONE);
     gl.uniformMatrix4fv(su.uProj, false, proj);
     gl.uniformMatrix4fv(su.uView, false, view);
     gl.uniform1f(su.uTime, t);
