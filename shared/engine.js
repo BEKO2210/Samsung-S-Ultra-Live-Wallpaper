@@ -206,6 +206,46 @@ export function mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz, out = new Float32
   return out;
 }
 
+// Render-to-texture target. Call `resize(w, h)` whenever the desired
+// size changes; it lazily (re)allocates an RGBA16F colour texture and
+// FBO. Half-float precision is required for bloom so bright highlights
+// don't clip to 1.0 before the blur has had a chance to spread them.
+export function createRenderTarget(gl, { halfFloat = true } = {}) {
+  const tex = gl.createTexture();
+  const fbo = gl.createFramebuffer();
+  let w = 0, h = 0;
+
+  const internal = halfFloat ? gl.RGBA16F : gl.RGBA8;
+  const type     = halfFloat ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+  if (halfFloat) gl.getExtension('EXT_color_buffer_half_float');
+
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  return {
+    tex, fbo,
+    get width() { return w; },
+    get height() { return h; },
+    resize(nw, nh) {
+      if (nw === w && nh === h) return;
+      w = nw; h = nh;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, gl.RGBA, type, null);
+    },
+    bind() {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.viewport(0, 0, w, h);
+    },
+  };
+}
+
 // Fade the initial `#hud` label (wallpaper title) away a few seconds
 // after load so the render stays unobstructed.
 export function fadeHud() {

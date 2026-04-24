@@ -1,6 +1,7 @@
 import {
   createCanvas, onResize, startLoop, createInput,
   link, uniformLocs, uploadAttrib, runWallpaper, fadeHud,
+  createRenderTarget,
   mat4Perspective, mat4LookAt,
 } from '../../shared/engine.js';
 
@@ -235,19 +236,89 @@ void main() {
   color = mix(color, dustC, dust * 0.35);
   color += pink * hii;
 
-  // Tone-mapped exposure — prevents blown-out highlights at the core.
+  // Output raw HDR emission — tone-mapping and dither happen in the
+  // composite pass after bloom, so bright regions can bloom properly.
   vec3 emit = color * density;
-  emit = 1.0 - exp(-emit * 1.05);
-
-  // Wider edge fade so the outer haze dissolves smoothly into space.
   float edgeFade = smoothstep(1.25, 0.35, r);
   emit *= edgeFade;
-
-  // Tiny dither to combat OLED banding in the faint outer haze.
-  float dither = (hash(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
-  emit += vec3(dither);
-
   outColor = vec4(emit, 1.0);
+}
+`;
+
+// ---- Post-process: scene → threshold → H-blur → V-blur → composite ----
+// A single fullscreen-triangle vertex shader is reused by every pass.
+const POST_VS = /* glsl */ `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;
+out vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+// Threshold / bright-pass: keep only the pixels above a soft knee so
+// only stars and the galactic core contribute to the bloom.
+const THRESHOLD_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uScene;
+out vec4 outColor;
+void main() {
+  vec3 c = texture(uScene, vUv).rgb;
+  float lum = max(max(c.r, c.g), c.b);
+  float knee = smoothstep(0.50, 1.10, lum);
+  outColor = vec4(c * knee, 1.0);
+}
+`;
+
+// 9-tap separable Gaussian (1D). Weights from σ≈2.4.
+const BLUR_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2      uStep;    // one-texel step in blur direction
+out vec4 outColor;
+void main() {
+  const float w0 = 0.227027;
+  const float w1 = 0.194595;
+  const float w2 = 0.121622;
+  const float w3 = 0.054054;
+  const float w4 = 0.016216;
+  vec3 sum = texture(uSrc, vUv).rgb * w0;
+  sum += texture(uSrc, vUv + uStep * 1.0).rgb * w1;
+  sum += texture(uSrc, vUv - uStep * 1.0).rgb * w1;
+  sum += texture(uSrc, vUv + uStep * 2.0).rgb * w2;
+  sum += texture(uSrc, vUv - uStep * 2.0).rgb * w2;
+  sum += texture(uSrc, vUv + uStep * 3.0).rgb * w3;
+  sum += texture(uSrc, vUv - uStep * 3.0).rgb * w3;
+  sum += texture(uSrc, vUv + uStep * 4.0).rgb * w4;
+  sum += texture(uSrc, vUv - uStep * 4.0).rgb * w4;
+  outColor = vec4(sum, 1.0);
+}
+`;
+
+// Final composite: HDR scene + bloom, tone-mapped and dithered.
+const COMPOSITE_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float     uBloomStrength;
+out vec4 outColor;
+float hash12(vec2 p) {
+  p = fract(p * vec2(127.1, 311.7));
+  p += dot(p, p + 19.19);
+  return fract(p.x * p.y);
+}
+void main() {
+  vec3 scene = texture(uScene, vUv).rgb;
+  vec3 bloom = texture(uBloom, vUv).rgb;
+  vec3 col = scene + bloom * uBloomStrength;
+  // Soft-knee tonemap so the bloomed core doesn't clip.
+  col = 1.0 - exp(-col * 1.25);
+  col += (hash12(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
+  outColor = vec4(col, 1.0);
 }
 `;
 
@@ -383,19 +454,50 @@ function main() {
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
+  // --- Post-process programs (threshold, blur, composite) ---
+  const thresholdProg = link(gl, POST_VS, THRESHOLD_FS);
+  const tu = uniformLocs(gl, thresholdProg, ['uScene']);
+  const blurProg = link(gl, POST_VS, BLUR_FS);
+  const blu = uniformLocs(gl, blurProg, ['uSrc', 'uStep']);
+  const compositeProg = link(gl, POST_VS, COMPOSITE_FS);
+  const cu = uniformLocs(gl, compositeProg, ['uScene', 'uBloom', 'uBloomStrength']);
+
+  // Fullscreen triangle shared by every post pass.
+  const postVao = gl.createVertexArray();
+  gl.bindVertexArray(postVao);
+  const postBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, postBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  // Three render targets: full-res HDR scene + two quarter-res half-float
+  // ping-pong targets for the separable Gaussian blur.
+  const sceneRt = createRenderTarget(gl);
+  const bloomA  = createRenderTarget(gl);
+  const bloomB  = createRenderTarget(gl);
+
   gl.clearColor(0, 0, 0, 1);
   gl.disable(gl.DEPTH_TEST);
-  gl.enable(gl.BLEND);
 
   const proj = new Float32Array(16);
   const view = new Float32Array(16);
   let pixelScale = 1;
+  let fullW = 1, fullH = 1;
+  let bloomW = 1, bloomH = 1;
 
   onResize(canvas, (size) => {
-    gl.viewport(0, 0, size.width, size.height);
-    const aspect = size.width / size.height;
+    fullW = size.width;
+    fullH = size.height;
+    bloomW = Math.max(1, Math.floor(fullW / 4));
+    bloomH = Math.max(1, Math.floor(fullH / 4));
+    sceneRt.resize(fullW, fullH);
+    bloomA .resize(bloomW, bloomH);
+    bloomB .resize(bloomW, bloomH);
+    const aspect = fullW / fullH;
     mat4Perspective(Math.PI / 3.4, aspect, 0.05, 12.0, proj);
-    pixelScale = size.height * 0.0018;
+    pixelScale = fullH * 0.0018;
   });
 
   const input = createInput();
@@ -404,10 +506,8 @@ function main() {
   // on a portrait aspect.
   const cam = { distance: 2.65, tilt: 1.05 };
 
-  // Constants — uploaded once. Additive blending is shared by both passes.
   gl.useProgram(fogProg);
   gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
-  gl.blendFunc(gl.ONE, gl.ONE);
 
   fadeHud();
 
@@ -422,9 +522,12 @@ function main() {
     const ez = Math.cos(yaw) * cosT * cam.distance;
     mat4LookAt(ex, ey, ez, 0, 0, 0, 0, 1, 0, view);
 
+    // --- Pass 1: render HDR scene (fog + stars) into sceneRt -----------
+    sceneRt.bind();
     gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
 
-    // --- Pass 1: galaxy fog plane (additive) ---
     gl.useProgram(fogProg);
     gl.bindVertexArray(fogVao);
     gl.uniformMatrix4fv(fu.uProj, false, proj);
@@ -433,7 +536,6 @@ function main() {
     gl.uniform2f(fu.uParallax, input.x, input.y);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    // --- Pass 2: stars (additive) ---
     gl.useProgram(starProg);
     gl.bindVertexArray(starVao);
     gl.uniformMatrix4fv(su.uProj, false, proj);
@@ -442,6 +544,45 @@ function main() {
     gl.uniform1f(su.uPixelScale, pixelScale);
     gl.uniform2f(su.uParallax, input.x, input.y);
     gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
+
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(postVao);
+
+    // --- Pass 2: threshold sceneRt → bloomA (quarter res) -------------
+    bloomA.bind();
+    gl.useProgram(thresholdProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneRt.tex);
+    gl.uniform1i(tu.uScene, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // --- Pass 3: horizontal blur bloomA → bloomB ---------------------
+    bloomB.bind();
+    gl.useProgram(blurProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, bloomA.tex);
+    gl.uniform1i(blu.uSrc, 0);
+    gl.uniform2f(blu.uStep, 1.0 / bloomW, 0.0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // --- Pass 4: vertical blur bloomB → bloomA -----------------------
+    bloomA.bind();
+    gl.bindTexture(gl.TEXTURE_2D, bloomB.tex);
+    gl.uniform2f(blu.uStep, 0.0, 1.0 / bloomH);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // --- Pass 5: composite scene + bloom → default framebuffer --------
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, fullW, fullH);
+    gl.useProgram(compositeProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneRt.tex);
+    gl.uniform1i(cu.uScene, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bloomA.tex);
+    gl.uniform1i(cu.uBloom, 1);
+    gl.uniform1f(cu.uBloomStrength, 0.75);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
   });
 }
 
