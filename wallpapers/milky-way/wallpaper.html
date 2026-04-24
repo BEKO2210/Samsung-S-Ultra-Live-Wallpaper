@@ -240,6 +240,43 @@ function mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz, out = new Float32Array(1
   return out;
 }
 
+// Render-to-texture target. Call `resize(w, h)` whenever the viewport
+// changes; it lazily (re)allocates an RGBA8 color texture and FBO. Useful
+// for post-effects that need to sample the scene (e.g. gravitational
+// lensing of the galaxy fog around a black hole).
+function createRenderTarget(gl) {
+  const tex = gl.createTexture();
+  const fbo = gl.createFramebuffer();
+  let w = 0, h = 0;
+
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+    gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  return {
+    tex, fbo,
+    get width() { return w; },
+    get height() { return h; },
+    resize(nw, nh) {
+      if (nw === w && nh === h) return;
+      w = nw; h = nh;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+        w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    },
+    bind() {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.viewport(0, 0, w, h);
+    },
+  };
+}
+
 // Catches throws from a wallpaper entry and shows them on screen without
 // using innerHTML (avoids DOM-XSS from shader error strings).
 function runWallpaper(mainFn) {
@@ -255,9 +292,9 @@ function runWallpaper(mainFn) {
   }
 }
 
-return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, runWallpaper };
+return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, createRenderTarget, runWallpaper };
 })();
-const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, mat4Perspective, mat4LookAt } = __engine;
+const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, mat4Perspective, mat4LookAt, createRenderTarget } = __engine;
 const STAR_COUNT = 140000;
 const ARMS = 4;
 const BULGE_FRACTION = 0.22;
@@ -622,6 +659,81 @@ void main() {
 }
 `;
 
+// --- Lens-warp post pass: samples the fog FBO with Einstein-ring
+// displacement around Sgr A*. Implements the thin-lens equation
+//   beta = theta - theta_E^2 / theta      (source <- image)
+// so we pull the sample point toward the BH center for the primary image.
+// Everything inside the shadow radius is clipped to black.
+const LENS_VS = /* glsl */ `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;
+out vec2 vUv;
+out vec2 vNdc;
+void main() {
+  vNdc = aPos;
+  vUv  = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+const LENS_FS = /* glsl */ `#version 300 es
+precision highp float;
+
+in vec2 vUv;
+in vec2 vNdc;
+uniform sampler2D uScene;
+uniform vec2  uBhNdc;
+uniform float uAspect;
+uniform float uShadowNdc;
+uniform float uEinsteinNdc;
+out vec4 outColor;
+
+void main() {
+  // Work in aspect-corrected NDC so the lens is circular.
+  vec2 p = vNdc - uBhNdc;
+  p.x *= uAspect;
+  float r = length(p);
+
+  // Outside the shadow: invert thin-lens to find source angle beta.
+  // beta = r - rE^2 / r   (stable form; never goes negative above rE).
+  float rE  = uEinsteinNdc;
+  float rSh = uShadowNdc;
+
+  if (r < rSh) {
+    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+
+  float beta = r - (rE * rE) / r;
+  // For r just above rE, beta can dip below zero (back-side image); clamp.
+  beta = max(beta, 0.0);
+  vec2  dir = p / max(r, 1e-5);
+  vec2  srcP = dir * beta;
+  srcP.x /= uAspect;
+  vec2  srcNdc = uBhNdc + srcP;
+  vec2  srcUv  = srcNdc * 0.5 + 0.5;
+
+  // Magnification boosts brightness near the Einstein ring. For a point
+  // lens the scalar magnification is |theta / beta * dtheta/dbeta|, which
+  // in our stable form reduces to (r^2 + rE^2) / (r^2 - rE^2). Clamp it so
+  // we don't blow out at the ring itself.
+  float r2 = r * r, rE2 = rE * rE;
+  float mag = (r2 + rE2) / max(r2 - rE2, rE2 * 0.08);
+  mag = clamp(mag, 0.4, 3.2);
+
+  // Fetch source; clamp to edge so the frame borders don't ghost in.
+  vec3 scene = vec3(0.0);
+  if (all(greaterThanEqual(srcUv, vec2(0.0))) &&
+      all(lessThanEqual   (srcUv, vec2(1.0)))) {
+    scene = texture(uScene, srcUv).rgb;
+  }
+
+  // Soft shadow edge so the event horizon reads as a clean disk.
+  float edge = smoothstep(rSh * 0.97, rSh * 1.02, r);
+  outColor = vec4(scene * mag * edge, 1.0);
+}
+`;
+
 function mixColor(a, b, t) {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
@@ -739,6 +851,22 @@ function main() {
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
+  // --- Lens post-pass: samples the fog FBO with Einstein-ring warp ---
+  const lensProg = link(gl, LENS_VS, LENS_FS);
+  const lu = uniformLocs(gl, lensProg, [
+    'uScene', 'uBhNdc', 'uAspect', 'uShadowNdc', 'uEinsteinNdc',
+  ]);
+  const lensVao = gl.createVertexArray();
+  gl.bindVertexArray(lensVao);
+  const lensBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, lensBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const fogTarget = createRenderTarget(gl);
+
   // --- Black-hole pass (fullscreen triangle) ---
   const bhProg = link(gl, BH_VS, BH_FS);
   const bu = uniformLocs(gl, bhProg, [
@@ -780,6 +908,7 @@ function main() {
     viewH = size.height;
     mat4Perspective(Math.PI / 3.4, aspect, 0.05, 12.0, proj);
     pixelScale = size.height * 0.0018;
+    fogTarget.resize(size.width, size.height);
   });
 
   const input = createInput();
@@ -820,9 +949,14 @@ function main() {
     const diskTiltY = Math.max(0.1, Math.abs(Math.sin(tilt)));
     const diskYaw   = 0.0; // xz-plane disk, major axis already horizontal in view
 
+    // --- Pass 0: galaxy fog disk drawn into offscreen FBO ---
+    // We need an unlensed copy of the galaxy so the post pass can sample it
+    // under the thin-lens equation. Additive onto a cleared black target.
+    fogTarget.bind();
+    gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-
-    // --- Pass 0: galaxy fog disk (additive, behind stars) ---
+    gl.enable(gl.BLEND);
     gl.useProgram(fogProg);
     gl.bindVertexArray(fogVao);
     gl.blendFunc(gl.ONE, gl.ONE);
@@ -832,6 +966,22 @@ function main() {
     gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
     gl.uniform2f(fu.uParallax, input.x, input.y);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // --- Pass 0b: lens post — sample FBO with Einstein warp, write opaque ---
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.disable(gl.BLEND);
+    gl.useProgram(lensProg);
+    gl.bindVertexArray(lensVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fogTarget.tex);
+    gl.uniform1i(lu.uScene, 0);
+    gl.uniform2f(lu.uBhNdc, bhNdc[0], bhNdc[1]);
+    gl.uniform1f(lu.uAspect, aspect);
+    gl.uniform1f(lu.uShadowNdc, shadowNdc);
+    gl.uniform1f(lu.uEinsteinNdc, einsteinNdc);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.BLEND);
 
     // --- Pass 1: stars (additive) ---
     gl.useProgram(starProg);
