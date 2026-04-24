@@ -1,6 +1,6 @@
 import {
   createCanvas, onResize, startLoop, createInput,
-  link, uniformLocs, runWallpaper,
+  link, uniformLocs, uploadAttrib, runWallpaper,
   mat4Perspective, mat4LookAt,
 } from '../../shared/engine.js';
 
@@ -12,6 +12,7 @@ const GRID_N      = 180;              // vertices per side → (N−1)² cells
 const GRID_EXTENT = 5.5;              // world-unit half-width
 const MAX_MASSES  = 5;                // hard cap — also GLSL array size
 const SOFTEN      = 0.06;             // ε² in Newtonian softening
+const STAR_COUNT  = 2400;             // sphere-distributed background stars
 
 const GRID_VS = /* glsl */ `#version 300 es
 precision highp float;
@@ -85,6 +86,90 @@ void main() {
 }
 `;
 
+// Distant starfield drawn as GL_POINTS on a sphere centered on the
+// camera. We subtract the camera position in the VS so the stars stay
+// locked to the sky and don't move with the grid — pure parallax
+// background, no gravity deflection.
+const STAR_VS = /* glsl */ `#version 300 es
+precision highp float;
+
+layout(location = 0) in vec3  aDir;    // unit direction in world space
+layout(location = 1) in float aSize;
+layout(location = 2) in float aColor;  // stellar class: 0 blue → 1 red
+layout(location = 3) in float aTwinkle;
+
+uniform mat4  uProj;
+uniform mat4  uView;
+uniform float uPixelScale;
+uniform float uTime;
+uniform float uSphereRadius;
+uniform vec3  uCamPos;
+
+out vec3  vColor;
+out float vAlpha;
+
+void main() {
+  vec3 pos = uCamPos + aDir * uSphereRadius;
+  vec4 viewPos = uView * vec4(pos, 1.0);
+  gl_Position = uProj * viewPos;
+
+  gl_PointSize = clamp(aSize * uPixelScale, 1.0, 8.0);
+
+  vec3 hot  = vec3(0.70, 0.82, 1.10);    // O/B
+  vec3 warm = vec3(1.00, 0.88, 0.65);    // G
+  vec3 cool = vec3(1.00, 0.55, 0.40);    // M
+  vec3 c = mix(hot, warm, smoothstep(0.0, 0.6, aColor));
+  c      = mix(c,   cool, smoothstep(0.6, 1.0, aColor));
+  vColor = c;
+
+  float tw = 0.75 + 0.25 * sin(uTime * 2.0 + aTwinkle * 6.283);
+  vAlpha = tw * 0.75;
+}
+`;
+
+const STAR_FS = /* glsl */ `#version 300 es
+precision highp float;
+
+in vec3  vColor;
+in float vAlpha;
+out vec4 outColor;
+
+void main() {
+  vec2 uv = gl_PointCoord - 0.5;
+  float d2 = dot(uv, uv) * 4.0;
+  if (d2 > 1.0) discard;
+  float core = exp(-d2 * 7.0);
+  float halo = exp(-d2 * 1.5) * 0.30;
+  float a = (core + halo) * vAlpha;
+  outColor = vec4(vColor * a, a);
+}
+`;
+
+// Uniformly-distributed directions on the unit sphere (Marsaglia).
+function buildStars(count) {
+  const dir     = new Float32Array(count * 3);
+  const size    = new Float32Array(count);
+  const color   = new Float32Array(count);
+  const twinkle = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    let x, y, s;
+    do {
+      x = Math.random() * 2 - 1;
+      y = Math.random() * 2 - 1;
+      s = x * x + y * y;
+    } while (s >= 1);
+    const f = 2 * Math.sqrt(1 - s);
+    dir[i * 3]     = x * f;
+    dir[i * 3 + 1] = 1 - 2 * s;
+    dir[i * 3 + 2] = y * f;
+    // Rare bright stars, majority faint.
+    size[i]    = 0.9 + (Math.random() < 0.03 ? Math.random() * 3.5 : Math.random() * 1.4);
+    color[i]   = Math.random();
+    twinkle[i] = Math.random();
+  }
+  return { dir, size, color, twinkle };
+}
+
 // Build an indexed line list over an N×N lattice: horizontal + vertical
 // segments. Index buffer as Uint32 to stay safe for N > 256.
 function buildGrid(n) {
@@ -146,6 +231,19 @@ function main() {
     'uMaxDepth',
   ]);
 
+  // --- Background starfield program ---
+  const starProg = link(gl, STAR_VS, STAR_FS);
+  const su = uniformLocs(gl, starProg, [
+    'uProj', 'uView', 'uPixelScale', 'uTime', 'uSphereRadius', 'uCamPos',
+  ]);
+  const stars = buildStars(STAR_COUNT);
+  const starVao = gl.createVertexArray();
+  gl.bindVertexArray(starVao);
+  uploadAttrib(gl, 0, stars.dir,     3);
+  uploadAttrib(gl, 1, stars.size,    1);
+  uploadAttrib(gl, 2, stars.color,   1);
+  uploadAttrib(gl, 3, stars.twinkle, 1);
+
   const { verts, indices } = buildGrid(GRID_N);
 
   const vao = gl.createVertexArray();
@@ -168,10 +266,13 @@ function main() {
 
   const proj = new Float32Array(16);
   const view = new Float32Array(16);
+  let pixelScale = 1;
 
   onResize(canvas, (size) => {
     gl.viewport(0, 0, size.width, size.height);
-    mat4Perspective(Math.PI / 3.2, size.width / size.height, 0.05, 40.0, proj);
+    // Far plane 80 gives us room for the star sphere at radius 30.
+    mat4Perspective(Math.PI / 3.2, size.width / size.height, 0.05, 80.0, proj);
+    pixelScale = size.height * 0.0016;
   });
 
   const input = createInput();
@@ -212,6 +313,18 @@ function main() {
 
     gl.clear(gl.COLOR_BUFFER_BIT);
 
+    // --- Pass 0: distant starfield (additive, locked to camera) ---
+    gl.useProgram(starProg);
+    gl.bindVertexArray(starVao);
+    gl.uniformMatrix4fv(su.uProj, false, proj);
+    gl.uniformMatrix4fv(su.uView, false, view);
+    gl.uniform1f(su.uPixelScale, pixelScale);
+    gl.uniform1f(su.uTime, t);
+    gl.uniform1f(su.uSphereRadius, 30.0);
+    gl.uniform3f(su.uCamPos, ex, ey, ez);
+    gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
+
+    // --- Pass 1: spacetime grid ---
     gl.useProgram(prog);
     gl.bindVertexArray(vao);
     gl.uniformMatrix4fv(u.uProj, false, proj);
