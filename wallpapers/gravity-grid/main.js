@@ -5,28 +5,46 @@ import {
 } from '../../shared/engine.js';
 
 // Spacetime grid — a square mesh in the xz plane rendered as GL_LINES.
-// Step 1 draws it flat; subsequent steps will warp it around moving
-// masses in the vertex shader.
-const GRID_N      = 180;             // vertices per side → (N−1)² cells
+// Up to MAX_MASSES invisible point masses deflect every vertex downward
+// by the softened-Newtonian profile y = −M / √(r² + ε²). The sum over
+// masses gives the Flamm-paraboloid embedding look.
+const GRID_N      = 180;              // vertices per side → (N−1)² cells
 const GRID_EXTENT = 5.5;              // world-unit half-width
+const MAX_MASSES  = 5;                // hard cap — also GLSL array size
+const SOFTEN      = 0.06;             // ε² in Newtonian softening
 
 const GRID_VS = /* glsl */ `#version 300 es
 precision highp float;
+
+#define MAX_MASSES ${MAX_MASSES}
 
 layout(location = 0) in vec2 aXZ;     // vertex grid coord in [-1..1]
 
 uniform mat4  uProj;
 uniform mat4  uView;
 uniform float uExtent;
+uniform float uSoften;
+uniform int   uMassCount;
+// Each mass: (x, z, strength) in world units / world units / unitless.
+uniform vec3  uMasses[MAX_MASSES];
 
 out float vViewDist;
 out float vY;
 
 void main() {
   vec2 xz = aXZ * uExtent;
+
+  // Sum softened wells. Loop is bounded so WebGL2 unrolls it cleanly
+  // on mobile GPUs. Break once we pass the active count.
   float y = 0.0;
-  vec4 worldPos = vec4(xz.x, y, xz.y, 1.0);
-  vec4 viewPos  = uView * worldPos;
+  for (int i = 0; i < MAX_MASSES; i++) {
+    if (i >= uMassCount) break;
+    vec2 dp = xz - uMasses[i].xy;
+    float r2 = dot(dp, dp) + uSoften;
+    y -= uMasses[i].z / sqrt(r2);
+  }
+
+  vec4 viewPos = uView * vec4(xz.x, y, xz.y, 1.0);
   vY = y;
   vViewDist = -viewPos.z;
   gl_Position = uProj * viewPos;
@@ -84,11 +102,32 @@ function buildGrid(n) {
   return { verts, indices };
 }
 
+// Each mass orbits on its own slow ellipse with an independent phase.
+// Strengths and periods are randomized so the grid feels alive without
+// any clear rhythm. Positions are regenerated once; only their
+// time-evaluated x/z change every frame.
+function buildMasses(count) {
+  const m = [];
+  for (let i = 0; i < count; i++) {
+    m.push({
+      ax:     1.8 + Math.random() * 2.2,          // semi-major in x
+      az:     1.6 + Math.random() * 2.0,          // semi-major in z
+      phase:  Math.random() * Math.PI * 2,
+      speed:  0.10 + Math.random() * 0.18,
+      skew:   (Math.random() - 0.5) * 0.8,        // rotates the ellipse
+      strength: 0.45 + Math.random() * 0.55,      // well depth M
+    });
+  }
+  return m;
+}
+
 function main() {
   const { canvas, gl } = createCanvas();
 
   const prog = link(gl, GRID_VS, GRID_FS);
-  const u = uniformLocs(gl, prog, ['uProj', 'uView', 'uExtent']);
+  const u = uniformLocs(gl, prog, [
+    'uProj', 'uView', 'uExtent', 'uSoften', 'uMassCount', 'uMasses',
+  ]);
 
   const { verts, indices } = buildGrid(GRID_N);
 
@@ -121,6 +160,10 @@ function main() {
   const input = createInput();
   const cam = { distance: 7.0, tilt: 0.95, yaw: 0 };
 
+  const masses = buildMasses(MAX_MASSES);
+  // Packed (x, z, strength) for each mass, uploaded via uniform3fv.
+  const massBuf = new Float32Array(MAX_MASSES * 3);
+
   const hud = document.getElementById('hud');
   if (hud) {
     hud.style.transition = 'opacity 1.8s ease 2.5s';
@@ -138,6 +181,18 @@ function main() {
     const ez = Math.cos(yaw) * cosT * cam.distance;
     mat4LookAt(ex, ey, ez, 0, 0, 0, 0, 1, 0, view);
 
+    // Evaluate each mass's elliptical orbit and pack for the shader.
+    for (let i = 0; i < masses.length; i++) {
+      const m = masses[i];
+      const phi = m.phase + t * m.speed;
+      const cs = Math.cos(m.skew), sn = Math.sin(m.skew);
+      const x0 = Math.cos(phi) * m.ax;
+      const z0 = Math.sin(phi) * m.az;
+      massBuf[i * 3]     = x0 * cs - z0 * sn;
+      massBuf[i * 3 + 1] = x0 * sn + z0 * cs;
+      massBuf[i * 3 + 2] = m.strength;
+    }
+
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     gl.useProgram(prog);
@@ -145,6 +200,9 @@ function main() {
     gl.uniformMatrix4fv(u.uProj, false, proj);
     gl.uniformMatrix4fv(u.uView, false, view);
     gl.uniform1f(u.uExtent, GRID_EXTENT);
+    gl.uniform1f(u.uSoften, SOFTEN);
+    gl.uniform1i(u.uMassCount, masses.length);
+    gl.uniform3fv(u.uMasses, massBuf);
     gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_INT, 0);
   });
 }
