@@ -296,9 +296,10 @@ return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, lin
 })();
 const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, mat4Perspective, mat4LookAt, createRenderTarget } = __engine;
 const STAR_COUNT = 140000;
-const ARMS = 4;
+const ARMS = 2;                      // Milky Way is a 2-armed grand-design
 const BULGE_FRACTION = 0.22;
-const ARM_SPREAD = 0.22;
+const HALO_FRACTION  = 0.10;         // stars scattered off-arm for between-arm texture
+const ARM_SPREAD = 0.16;
 const DISK_THICKNESS = 0.035;
 const FOG_QUAD_RADIUS = 1.35;       // galaxy fog disk extent in world units
 
@@ -308,11 +309,14 @@ const BH_SHADOW_WORLD = 0.065;     // shadow disk radius in world units
 const BH_DISK_INNER   = 0.09;      // accretion disk inner edge
 const BH_DISK_OUTER   = 0.27;      // accretion disk outer edge
 
+// SPIRAL_PITCH and ROT_*  must match the fog shader's PITCH / rotRate so the
+// stars sit exactly on top of the bright arm ridges instead of drifting
+// across the dust lanes.
 const STAR_VS = /* glsl */ `#version 300 es
 precision highp float;
 
 #define ARMS ${ARMS}
-#define SPIRAL_TIGHTNESS 0.42
+#define SPIRAL_PITCH 0.48
 #define GALAXY_RADIUS 1.0
 #define TAU 6.28318530718
 
@@ -338,9 +342,10 @@ out vec3  vColor;
 out float vBrightness;
 
 void main() {
-  // Differential rotation — inner radii orbit much faster than outer.
-  float rotSpeed = 0.55 / (aRadius * 1.4 + 0.18);
-  float spiralOffset = log(aRadius + 0.08) * SPIRAL_TIGHTNESS * 8.0;
+  // Differential rotation — matches fog rotRate so arm stars stay locked
+  // onto the bright fog ridges (a tiny phase offset gives "breathing").
+  float rotSpeed = 0.18 / (aRadius * 1.4 + 0.22);
+  float spiralOffset = log(aRadius + 0.08) / SPIRAL_PITCH;
   float armBase = aArm * (TAU / float(ARMS)) + spiralOffset;
   float angle = armBase + aAngle + uTime * rotSpeed;
 
@@ -352,18 +357,21 @@ void main() {
   vec4 clip    = uProj * viewPos;
 
   // --- Gravitational lensing of the star field around Sgr A* ---
-  // Work in isotropic NDC (aspect-corrected) so the distortion is circular.
+  // Forward thin-lens map: a source at angle beta is imaged at angle
+  //   theta = 0.5 * (beta + sqrt(beta^2 + 4 * theta_E^2))
+  // which is the positive root of theta^2 - beta*theta - theta_E^2 = 0.
+  // This guarantees theta > theta_E, so stars never leak into the shadow
+  // and the Einstein ring forms naturally from piled-up background sources.
   vec2 ndc = clip.xy / clip.w;
   vec2 p   = ndc - uBhNdc;
   p.x *= uAspect;
-  float d = max(length(p), 1e-4);
-  vec2 dir = p / d;
+  float beta = max(length(p), 1e-5);
+  vec2  dir  = p / beta;
 
-  // Einstein-ring style radial push: small far away, strong near the shadow.
-  // r' = r + k/r, clipped so it doesn't blow up at the center.
-  float lens = (uEinsteinNdc * uEinsteinNdc) / max(d, uShadowNdc * 0.6);
-  float dNew = d + lens;
-  vec2 pNew = dir * dNew;
+  float rE    = uEinsteinNdc;
+  float theta = 0.5 * (beta + sqrt(beta * beta + 4.0 * rE * rE));
+
+  vec2 pNew = dir * theta;
   pNew.x /= uAspect;
   ndc = uBhNdc + pNew;
   clip.xy = ndc * clip.w;
@@ -373,14 +381,18 @@ void main() {
   float dist = max(-viewPos.z, 0.25);
   gl_PointSize = clamp(aSize * uPixelScale / dist, 1.0, 48.0);
 
-  // Kill stars that fall inside the shadow — light from behind cannot escape.
-  if (dNew < uShadowNdc) {
+  // Hard-kill stars whose image would fall inside the shadow; also drop
+  // stars that are *behind* the black hole (secondary image is handled by
+  // the fog lens pass, not duplicated for point stars).
+  if (theta < uShadowNdc * 1.02) {
     gl_PointSize = 0.0;
   }
 
-  // Einstein-ring brightening for stars grazing the photon sphere.
-  float ring = exp(-pow((dNew - uShadowNdc * 1.08) / (uShadowNdc * 0.22), 2.0));
-  float lensBoost = 1.0 + ring * 1.4;
+  // Einstein-ring brightening: magnification mu = theta / beta * dtheta/dbeta.
+  // For the stable form above, mu = theta^2 / (theta^2 - rE^2). Clamp it
+  // so the ring doesn't blow out individual stars.
+  float mu = (theta * theta) / max(theta * theta - rE * rE, rE * rE * 0.08);
+  float lensBoost = clamp(mu, 0.8, 3.0);
 
   float tw = 0.78 + 0.22 * sin(uTime * 2.3 + aTwinkle * TAU);
   float edgeFade = smoothstep(1.02, 0.75, aRadius);
@@ -641,9 +653,10 @@ void main() {
   float r = length(vPlane);
   if (r > 1.25) discard;
 
-  // Differential rotation of the pattern itself, slower at larger radii.
+  // Differential rotation — same curve as the star VS so the bright arm
+  // ridges and the star density peaks stay visually locked together.
   float rotRate = 0.18 / (r * 1.4 + 0.22);
-  float theta = atan(vPlane.y, vPlane.x) + uTime * rotRate;
+  float theta = atan(vPlane.y, vPlane.x) - uTime * rotRate;
 
   // Logarithmic spiral: arms at theta - log(r)/pitch = k * (2π/N).
   float armPhase = theta - log(r + 0.08) / PITCH;
@@ -795,35 +808,55 @@ function buildStars(count) {
   const twinkle = new Float32Array(count);
 
   const CORE_YELLOW = [1.00, 0.82, 0.52];
-  const HOT_WHITE   = [0.85, 0.92, 1.00];
-  const BLUE_GIANT  = [0.55, 0.75, 1.00];
+  const HOT_WHITE   = [0.90, 0.94, 1.00];
+  const BLUE_GIANT  = [0.55, 0.72, 1.00];
+  const YOUNG_BLUE  = [0.70, 0.80, 1.10];
   const DUST_RED    = [1.00, 0.55, 0.40];
 
   const bulgeCount = Math.floor(count * BULGE_FRACTION);
+  const haloStart  = Math.floor(count * (1.0 - HALO_FRACTION));
 
   for (let i = 0; i < count; i++) {
     const inBulge = i < bulgeCount;
+    const inHalo  = i >= haloStart;
     const u = Math.random();
-    // Push bulge stars outside the shadow so Sgr A* reads as a clean disk.
-    const r = inBulge ? 0.08 + Math.pow(u, 1.8) * 0.22
-                      : 0.22 + Math.pow(u, 0.65) * 0.78;
+
+    let r;
+    if (inBulge) {
+      // Push bulge stars outside the shadow so Sgr A* reads cleanly.
+      r = 0.08 + Math.pow(u, 1.8) * 0.22;
+    } else if (inHalo) {
+      // Between-arm / thick-disk halo: flat radial distribution, loose.
+      r = 0.25 + u * 0.75;
+    } else {
+      r = 0.22 + Math.pow(u, 0.65) * 0.78;
+    }
     radius[i] = Math.min(r, 1.0);
 
     arm[i] = Math.floor(Math.random() * ARMS);
-    angle[i] = gaussian() * ARM_SPREAD * (1.0 - 0.55 * radius[i]);
+    // Halo stars decouple from arms; arm stars are tightly concentrated.
+    const spread = inHalo ? 1.6 : ARM_SPREAD * (1.0 - 0.55 * radius[i]);
+    angle[i] = gaussian() * spread;
 
     const bulgeBoost = Math.exp(-radius[i] * 6.0);
-    zOff[i] = gaussian() * DISK_THICKNESS * (1.0 + bulgeBoost * 4.0);
+    const thickDisk  = inHalo ? 3.0 : 1.0 + bulgeBoost * 4.0;
+    zOff[i] = gaussian() * DISK_THICKNESS * thickDisk;
 
     let c;
     if (inBulge) {
       c = mixColor(CORE_YELLOW, DUST_RED, Math.random() * 0.4);
-    } else if (radius[i] > 0.82 && Math.random() < 0.22) {
+    } else if (inHalo) {
+      // Halo: older, yellower stars.
+      c = mixColor(CORE_YELLOW, HOT_WHITE, Math.random() * 0.5);
+    } else if (radius[i] > 0.55 && Math.random() < 0.22) {
+      // Young blue clusters along outer arms (OB associations).
+      c = mixColor(YOUNG_BLUE, BLUE_GIANT, Math.random());
+    } else if (radius[i] > 0.82 && Math.random() < 0.15) {
       c = mixColor(DUST_RED, CORE_YELLOW, Math.random() * 0.4);
-    } else if (Math.random() < 0.08) {
+    } else if (Math.random() < 0.06) {
       c = BLUE_GIANT.slice();
     } else {
-      c = mixColor(HOT_WHITE, BLUE_GIANT, Math.random() * 0.55);
+      c = mixColor(HOT_WHITE, BLUE_GIANT, Math.random() * 0.45);
     }
 
     const lum = 0.55 + Math.random() * 0.55;
@@ -832,8 +865,10 @@ function buildStars(count) {
     color[i * 3 + 2] = c[2] * lum;
 
     let s = 1.0 + Math.random() * 1.2;
-    if (Math.random() < 0.012) s += 2.0 + Math.random() * 2.5;
+    // Rare bright giants along the arms — visible hero stars.
+    if (!inHalo && Math.random() < 0.012) s += 2.0 + Math.random() * 2.8;
     if (inBulge) s *= 0.85;
+    if (inHalo)  s *= 0.75;
     size[i] = s;
 
     twinkle[i] = Math.random();
