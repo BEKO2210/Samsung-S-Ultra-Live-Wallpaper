@@ -104,28 +104,27 @@
 </style>
 </head>
 <body>
-<div class="hud" id="hud">Milky Way · Sgr A*</div>
+<div class="hud" id="hud">Milchstraße</div>
 
 <button class="info-btn" id="info-open" aria-label="Info">i</button>
 
 <div class="info-panel" id="info-panel" role="dialog" aria-modal="true" aria-label="Wallpaper installieren">
   <button class="close-btn" id="info-close" aria-label="Schließen">×</button>
   <div class="info-card">
-    <h1>Milchstraße · Sgr A*</h1>
-    <p class="sub">Live-Wallpaper · WebGL2</p>
+    <h1>Milchstraße</h1>
+    <p class="sub">Live-Wallpaper · Lehrbuch-Ansicht · WebGL2</p>
 
-    <p>Grand-Design-Spiralgalaxie mit prozeduralen Armen, Staubstraßen,
-    rosa HII-Sternentstehungsregionen und einem supermassereichen
-    Schwarzen Loch (Sgr A*) im Zentrum. Das Schwarze Loch hat eine
-    Doppler-verstärkte Akkretionsscheibe (heiße/helle Annäherungsseite,
-    rote/dunkle Wegbewegungsseite), einen Photonenring bei 1,045 · r<sub>sh</sub>
-    und einen gelenster oberer Bogen (Luminet 1979). Die Galaxie selbst
-    wird per Einstein-Gleichung β = θ − θ<sub>E</sub>² / θ um das Zentrum
-    gebogen — Staubstraßen und Sterne verbiegen sich sichtbar.</p>
+    <p>Draufsicht auf unsere Galaxie wie in Astronomie- und
+    Erdkundebuch-Animationen: eine <b>Balkenspiralgalaxie</b> (SBbc) mit
+    vier großen Spiralarmen, warmem Zentralbalken, Staubstraßen entlang
+    der Arm-Innenseiten, rosa HII-Sternentstehungsregionen an den
+    Armspitzen und einem gelblich-orangen Halo aus alten
+    Kugelsternhaufen. Die Galaxie dreht sich differenziell —
+    innen schneller als außen — genau wie unsere echte Milchstraße.</p>
 
     <a class="download" href="./wallpaper.html" download="milky-way-wallpaper.html">
       ⬇ Wallpaper herunterladen (eine Datei)
-      <small>wallpaper.html · offline · ~37 KB · WebGL2</small>
+      <small>wallpaper.html · offline · WebGL2</small>
     </a>
 
     <h2>Als Samsung-Wallpaper verwenden</h2>
@@ -144,7 +143,7 @@
       <code>wallpaper.html</code> auswählen. Die Datei enthält alles
       (Engine, Stylesheet, Shader) — keine Internetverbindung nötig.</li>
 
-      <li><b>Als Vollbild-PWA (kein echtes Wallpaper, aber sofort bereit):</b>
+      <li><b>Als Vollbild-PWA:</b>
       In Samsung Internet oder Chrome diese Seite öffnen → Menü →
       <i>„Zur Startseite hinzufügen"</i>. Das Icon startet dann
       Vollbild ohne Browser-UI.</li>
@@ -157,11 +156,10 @@
     <h2>Hinweise</h2>
     <ol>
       <li>Optimiert für Samsung Galaxy S Ultra (1440 × 3088, 120 Hz OLED).
-      Auf OLED-Displays wirkt das perfekt schwarze Zentrum des Schwarzen
-      Lochs besonders tief — Sgr A*'s Shadow ist pixelgenau <code>#000</code>.</li>
-      <li>Touch / Neigen: die Galaxie parallaxt leicht um den
-      Beobachter. Linke/Rechte Hälfte der Scheibe zeigt auch die
-      Doppler-Asymmetrie.</li>
+      Der tiefschwarze Hintergrund nutzt die OLED-Pixelabschaltung für
+      echtes Schwarz — kein Banding wie auf LCDs.</li>
+      <li>Touch / Neigen: die Galaxie parallaxt leicht — leichte
+      Neigung links/rechts zeigt die Scheibe aus etwas anderem Winkel.</li>
       <li>Akku: Live-Wallpaper pausiert automatisch bei ausgeschaltetem
       Display (<code>visibilitychange</code>) und hält DPR ≤ 2,
       damit das Rendering bei 120 Hz nicht einbricht.</li>
