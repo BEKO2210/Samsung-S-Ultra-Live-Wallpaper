@@ -65,25 +65,46 @@ export function startLoop(render) {
 }
 
 // Normalized input. Pointer and tilt share one [-1,1] signal so wallpapers
-// don't need to know the source. tap* are latched on pointerdown for
-// wallpapers that want touch-reactive effects (e.g. cosmic nebula).
+// don't need to know the source. `tap*` is a decaying pulse latched on
+// pointerdown; `hold*` + `holding` track the current sustained touch for
+// wallpapers that need to follow the finger (e.g. gravity-grid, nebula).
 export function createInput(target = window) {
   const state = {
     x: 0, y: 0,
     targetX: 0, targetY: 0,
     tapX: 0, tapY: 0, tapPulse: 0,
+    holdX: 0, holdY: 0, holding: false,
+    // Latest pointer position in CSS pixels (for wallpapers that need
+    // to unproject through the view matrix themselves).
+    clientX: 0, clientY: 0,
   };
 
   target.addEventListener('pointermove', (e) => {
     state.targetX = (e.clientX / window.innerWidth) * 2 - 1;
     state.targetY = -((e.clientY / window.innerHeight) * 2 - 1);
+    state.clientX = e.clientX;
+    state.clientY = e.clientY;
+    if (state.holding) {
+      state.holdX = state.targetX;
+      state.holdY = state.targetY;
+    }
   }, { passive: true });
 
   target.addEventListener('pointerdown', (e) => {
     state.tapX = (e.clientX / window.innerWidth) * 2 - 1;
     state.tapY = -((e.clientY / window.innerHeight) * 2 - 1);
     state.tapPulse = 1;
+    state.holdX = state.tapX;
+    state.holdY = state.tapY;
+    state.holding = true;
+    state.clientX = e.clientX;
+    state.clientY = e.clientY;
   }, { passive: true });
+
+  const endHold = () => { state.holding = false; };
+  target.addEventListener('pointerup',     endHold, { passive: true });
+  target.addEventListener('pointercancel', endHold, { passive: true });
+  target.addEventListener('pointerleave',  endHold, { passive: true });
 
   window.addEventListener('deviceorientation', (e) => {
     if (e.gamma == null || e.beta == null) return;

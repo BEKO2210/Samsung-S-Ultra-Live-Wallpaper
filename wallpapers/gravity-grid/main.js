@@ -7,10 +7,15 @@ import {
 // Spacetime grid — a square mesh in the xz plane rendered as GL_LINES.
 // Up to MAX_MASSES invisible point masses deflect every vertex downward
 // by the softened-Newtonian profile y = −M / √(r² + ε²). The sum over
-// masses gives the Flamm-paraboloid embedding look.
+// masses gives the Flamm-paraboloid embedding look. The last slot
+// (index MAX_MASSES−1) is reserved for a touch-driven well that tracks
+// the finger while the user holds a pointer.
 const GRID_N      = 180;              // vertices per side → (N−1)² cells
 const GRID_EXTENT = 5.5;              // world-unit half-width
-const MAX_MASSES  = 5;                // hard cap — also GLSL array size
+const ORBIT_MASSES = 4;               // autonomous orbiting wells
+const MAX_MASSES  = 5;                // hard cap — also GLSL array size (last = touch)
+const TOUCH_SLOT  = MAX_MASSES - 1;
+const TOUCH_STRENGTH = 1.1;           // fully-engaged finger well depth
 const SOFTEN      = 0.06;             // ε² in Newtonian softening
 const STAR_COUNT  = 2400;             // sphere-distributed background stars
 
@@ -277,39 +282,99 @@ function main() {
   });
 
   const input = createInput();
-  const cam = { distance: 7.0, tilt: 0.95, yaw: 0 };
+  // Grid lies flat on the display: tilt ≈ 88° (straight down with a hint
+  // of 3D parallax). Distance sized so the (−5.5..5.5) extent fills the
+  // portrait frame with a little horizon margin.
+  const cam = { distance: 7.0, tilt: 1.45, yaw: 0 };
 
-  const masses = buildMasses(MAX_MASSES);
+  const orbitMasses = buildMasses(ORBIT_MASSES);
   // Packed (x, z, strength) for each mass, uploaded via uniform3fv.
   const massBuf = new Float32Array(MAX_MASSES * 3);
 
-  // Constants — uploaded once. uMaxDepth's bound is the strongest well
-  // sampled at its own centre: y = −M / √ε.
-  const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
+  // Touch well state: position in world XZ, interpolated strength
+  // (eased toward TOUCH_STRENGTH while holding, toward 0 on release).
+  const touch = { x: 0, z: 0, strength: 0 };
+
+  // Bound on uMaxDepth: the deepest well we'll ever produce. Touch can
+  // dominate, so use its strength as the upper bound.
+  const maxStrength = Math.max(
+    TOUCH_STRENGTH,
+    orbitMasses.reduce((a, m) => Math.max(a, m.strength), 0),
+  );
   gl.useProgram(prog);
-  gl.uniform1f(u.uExtent,   GRID_EXTENT);
-  gl.uniform1f(u.uSoften,   SOFTEN);
-  gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
-  gl.uniform1i(u.uMassCount, masses.length);
+  gl.uniform1f(u.uExtent,    GRID_EXTENT);
+  gl.uniform1f(u.uSoften,    SOFTEN);
+  gl.uniform1f(u.uMaxDepth,  maxStrength / Math.sqrt(SOFTEN));
+  gl.uniform1i(u.uMassCount, MAX_MASSES);
   gl.useProgram(starProg);
   gl.uniform1f(su.uSphereRadius, 30.0);
 
   fadeHud();
 
+  // Unproject a normalized-device-coord pointer (ndcX, ndcY) onto the
+  // grid plane y=0 given a camera at (ex, ey, ez) looking at the origin
+  // with world-up. Sets `out = {x, z}` to the world-space hit, or
+  // returns false if the ray misses the plane (grazing or above).
+  const FOV_Y  = Math.PI / 3.2;
+  const tmpOut = { x: 0, z: 0 };
+  function unprojectToPlane(ndcX, ndcY, ex, ey, ez, aspect, out) {
+    // Orthonormal camera frame (forward points at the origin).
+    const invLen = 1 / Math.hypot(ex, ey, ez);
+    const fx = -ex * invLen, fy = -ey * invLen, fz = -ez * invLen;
+    // right = normalize(forward × worldUp), worldUp = (0,1,0).
+    let rx = -fz, ry = 0, rz = fx;
+    const rl = 1 / Math.hypot(rx, ry, rz);
+    rx *= rl; ry *= rl; rz *= rl;
+    // up' = right × forward  (already unit length because right ⟂ forward).
+    const ux = ry * fz - rz * fy;
+    const uy = rz * fx - rx * fz;
+    const uz = rx * fy - ry * fx;
+
+    const halfH = Math.tan(FOV_Y * 0.5);
+    const halfW = halfH * aspect;
+
+    const dx = fx + rx * ndcX * halfW + ux * ndcY * halfH;
+    const dy = fy + ry * ndcX * halfW + uy * ndcY * halfH;
+    const dz = fz + rz * ndcX * halfW + uz * ndcY * halfH;
+
+    // Ray-plane (y=0) intersect: ey + t·dy = 0. Require ray pointing down.
+    if (dy > -1e-4) return false;
+    const tt = -ey / dy;
+    out.x = ex + dx * tt;
+    out.z = ez + dz * tt;
+    return true;
+  }
+
   startLoop((dt, t) => {
     input.update(dt);
 
-    const yaw  = t * 0.04 + input.x * 0.22;
-    const tilt = cam.tilt + input.y * 0.08;
+    const yaw  = t * 0.03 + input.x * 0.10;
+    const tilt = cam.tilt + input.y * 0.04;
     const cosT = Math.cos(tilt);
     const ex = Math.sin(yaw) * cosT * cam.distance;
     const ey = Math.sin(tilt)       * cam.distance;
     const ez = Math.cos(yaw) * cosT * cam.distance;
     mat4LookAt(ex, ey, ez, 0, 0, 0, 0, 1, 0, view);
 
-    // Evaluate each mass's elliptical orbit and pack for the shader.
-    for (let i = 0; i < masses.length; i++) {
-      const m = masses[i];
+    const aspect = canvas.width / canvas.height;
+
+    // --- Touch well tracking ---
+    // While holding, unproject the current pointer onto the grid plane
+    // and ease the touch mass toward it; strength ramps up to
+    // TOUCH_STRENGTH. When released, strength decays back to 0 and the
+    // position stays put so the well fades in place.
+    if (input.holding && unprojectToPlane(input.holdX, input.holdY, ex, ey, ez, aspect, tmpOut)) {
+      const k = 1 - Math.exp(-dt * 14);
+      touch.x += (tmpOut.x - touch.x) * k;
+      touch.z += (tmpOut.z - touch.z) * k;
+    }
+    const targetStrength = input.holding ? TOUCH_STRENGTH : 0;
+    const strengthK = 1 - Math.exp(-dt * (input.holding ? 9 : 3));
+    touch.strength += (targetStrength - touch.strength) * strengthK;
+
+    // Pack orbit masses into slots 0..ORBIT_MASSES-1.
+    for (let i = 0; i < orbitMasses.length; i++) {
+      const m = orbitMasses[i];
       const phi = m.phase + t * m.speed;
       const cs = Math.cos(m.skew), sn = Math.sin(m.skew);
       const x0 = Math.cos(phi) * m.ax;
@@ -318,6 +383,10 @@ function main() {
       massBuf[i * 3 + 1] = x0 * sn + z0 * cs;
       massBuf[i * 3 + 2] = m.strength;
     }
+    // Touch slot.
+    massBuf[TOUCH_SLOT * 3]     = touch.x;
+    massBuf[TOUCH_SLOT * 3 + 1] = touch.z;
+    massBuf[TOUCH_SLOT * 3 + 2] = touch.strength;
 
     gl.clear(gl.COLOR_BUFFER_BIT);
 
