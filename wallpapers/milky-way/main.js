@@ -1,14 +1,16 @@
 import {
   createCanvas, onResize, startLoop, createInput,
   link, uniformLocs, uploadAttrib, runWallpaper,
-  mat4Perspective, mat4LookAt,
+  mat4Perspective, mat4LookAt, createRenderTarget,
 } from '../../shared/engine.js';
 
-const STAR_COUNT = 120000;
-const ARMS = 4;
+const STAR_COUNT = 140000;
+const ARMS = 2;                      // Milky Way is a 2-armed grand-design
 const BULGE_FRACTION = 0.22;
-const ARM_SPREAD = 0.22;
+const HALO_FRACTION  = 0.10;         // stars scattered off-arm for between-arm texture
+const ARM_SPREAD = 0.16;
 const DISK_THICKNESS = 0.035;
+const FOG_QUAD_RADIUS = 1.35;       // galaxy fog disk extent in world units
 
 // Sagittarius A* visual parameters, in the galaxy's coordinate space.
 // Angular sizes are tuned for a pleasing portrait composition, not to scale.
@@ -16,11 +18,14 @@ const BH_SHADOW_WORLD = 0.065;     // shadow disk radius in world units
 const BH_DISK_INNER   = 0.09;      // accretion disk inner edge
 const BH_DISK_OUTER   = 0.27;      // accretion disk outer edge
 
+// SPIRAL_PITCH and ROT_*  must match the fog shader's PITCH / rotRate so the
+// stars sit exactly on top of the bright arm ridges instead of drifting
+// across the dust lanes.
 const STAR_VS = /* glsl */ `#version 300 es
 precision highp float;
 
 #define ARMS ${ARMS}
-#define SPIRAL_TIGHTNESS 0.42
+#define SPIRAL_PITCH 0.48
 #define GALAXY_RADIUS 1.0
 #define TAU 6.28318530718
 
@@ -46,9 +51,10 @@ out vec3  vColor;
 out float vBrightness;
 
 void main() {
-  // Differential rotation — inner radii orbit much faster than outer.
-  float rotSpeed = 0.55 / (aRadius * 1.4 + 0.18);
-  float spiralOffset = log(aRadius + 0.08) * SPIRAL_TIGHTNESS * 8.0;
+  // Differential rotation — matches fog rotRate so arm stars stay locked
+  // onto the bright fog ridges (a tiny phase offset gives "breathing").
+  float rotSpeed = 0.18 / (aRadius * 1.4 + 0.22);
+  float spiralOffset = log(aRadius + 0.08) / SPIRAL_PITCH;
   float armBase = aArm * (TAU / float(ARMS)) + spiralOffset;
   float angle = armBase + aAngle + uTime * rotSpeed;
 
@@ -60,18 +66,21 @@ void main() {
   vec4 clip    = uProj * viewPos;
 
   // --- Gravitational lensing of the star field around Sgr A* ---
-  // Work in isotropic NDC (aspect-corrected) so the distortion is circular.
+  // Forward thin-lens map: a source at angle beta is imaged at angle
+  //   theta = 0.5 * (beta + sqrt(beta^2 + 4 * theta_E^2))
+  // which is the positive root of theta^2 - beta*theta - theta_E^2 = 0.
+  // This guarantees theta > theta_E, so stars never leak into the shadow
+  // and the Einstein ring forms naturally from piled-up background sources.
   vec2 ndc = clip.xy / clip.w;
   vec2 p   = ndc - uBhNdc;
   p.x *= uAspect;
-  float d = max(length(p), 1e-4);
-  vec2 dir = p / d;
+  float beta = max(length(p), 1e-5);
+  vec2  dir  = p / beta;
 
-  // Einstein-ring style radial push: small far away, strong near the shadow.
-  // r' = r + k/r, clipped so it doesn't blow up at the center.
-  float lens = (uEinsteinNdc * uEinsteinNdc) / max(d, uShadowNdc * 0.6);
-  float dNew = d + lens;
-  vec2 pNew = dir * dNew;
+  float rE    = uEinsteinNdc;
+  float theta = 0.5 * (beta + sqrt(beta * beta + 4.0 * rE * rE));
+
+  vec2 pNew = dir * theta;
   pNew.x /= uAspect;
   ndc = uBhNdc + pNew;
   clip.xy = ndc * clip.w;
@@ -81,14 +90,18 @@ void main() {
   float dist = max(-viewPos.z, 0.25);
   gl_PointSize = clamp(aSize * uPixelScale / dist, 1.0, 48.0);
 
-  // Kill stars that fall inside the shadow — light from behind cannot escape.
-  if (dNew < uShadowNdc) {
+  // Hard-kill stars whose image would fall inside the shadow; also drop
+  // stars that are *behind* the black hole (secondary image is handled by
+  // the fog lens pass, not duplicated for point stars).
+  if (theta < uShadowNdc * 1.02) {
     gl_PointSize = 0.0;
   }
 
-  // Einstein-ring brightening for stars grazing the photon sphere.
-  float ring = exp(-pow((dNew - uShadowNdc * 1.08) / (uShadowNdc * 0.22), 2.0));
-  float lensBoost = 1.0 + ring * 1.4;
+  // Einstein-ring brightening: magnification mu = theta / beta * dtheta/dbeta.
+  // For the stable form above, mu = theta^2 / (theta^2 - rE^2). Clamp it
+  // so the ring doesn't blow out individual stars.
+  float mu = (theta * theta) / max(theta * theta - rE * rE, rE * rE * 0.08);
+  float lensBoost = clamp(mu, 0.8, 3.0);
 
   float tw = 0.78 + 0.22 * sin(uTime * 2.3 + aTwinkle * TAU);
   float edgeFade = smoothstep(1.02, 0.75, aRadius);
@@ -150,13 +163,12 @@ uniform float uDiskYaw;     // rotation of the disk in screen plane (radians)
 uniform float uDiskTiltY;   // |sin(tilt)| — how squashed the disk looks
 uniform float uTime;
 
-// Smooth hash for disk turbulence.
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
   return fract(p.x * p.y);
 }
-float noise(vec2 p) {
+float vnoise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
   float a = hash(i);
   float b = hash(i + vec2(1.0, 0.0));
@@ -164,6 +176,24 @@ float noise(vec2 p) {
   float d = hash(i + vec2(1.0, 1.0));
   vec2 u = f * f * (3.0 - 2.0 * f);
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.55;
+  for (int i = 0; i < 4; i++) {
+    s += a * vnoise(p);
+    p *= 2.07; a *= 0.5;
+  }
+  return s;
+}
+
+// Blackbody-ish ramp keyed by "temperature" (0 cool → 1 hot). Cheap
+// approximation of Planck law peaks in the visible range.
+vec3 bbody(float t) {
+  t = clamp(t, 0.0, 1.4);
+  vec3 r = mix(vec3(1.00, 0.35, 0.12), vec3(1.00, 0.82, 0.45), smoothstep(0.0, 0.55, t));
+  r = mix(r, vec3(1.00, 0.98, 0.95), smoothstep(0.55, 0.95, t));
+  r = mix(r, vec3(0.70, 0.85, 1.30), smoothstep(0.95, 1.3, t));
+  return r;
 }
 
 void main() {
@@ -181,67 +211,288 @@ void main() {
   float rDisk  = length(vec2(pL.x, pL.y / tilt));
   float phi    = atan(pL.y / tilt, pL.x);
 
-  // --- Shadow: perfectly black core ---
-  float shadow = 1.0 - smoothstep(uShadowNdc * 0.92, uShadowNdc * 1.01, r);
+  // --- Shadow: perfectly black core, tight edge ---
+  float shadow = 1.0 - smoothstep(uShadowNdc * 0.96, uShadowNdc * 1.005, r);
 
-  // --- Photon ring: thin hot rim at the shadow boundary ---
-  float ringR = uShadowNdc * 1.04;
-  float ringW = uShadowNdc * 0.035;
+  // --- Photon ring: thin hot rim at 1.04 rSh (Kerr shadow radius limit) ---
+  float ringR  = uShadowNdc * 1.045;
+  float ringW  = uShadowNdc * 0.022;
   float photonRing = exp(-pow((r - ringR) / ringW, 2.0));
+  // n=2 sub-ring, half-brightness just outside.
+  photonRing += 0.35 * exp(-pow((r - uShadowNdc * 1.08) / (uShadowNdc * 0.05), 2.0));
 
-  // --- Accretion disk in its own plane (ellipse in screen space) ---
+  // --- Accretion disk (front face). Temperature profile from ISCO outwards
+  // follows T ∝ r^-0.75 for a thin disk; normalized so ISCO ≈ 1.
   float inner = uDiskInnerNdc;
   float outer = uDiskOuterNdc;
-  float diskBand = smoothstep(inner, inner * 1.08, rDisk) *
-                   (1.0 - smoothstep(outer * 0.85, outer, rDisk));
+  float diskBand = smoothstep(inner, inner * 1.05, rDisk) *
+                   (1.0 - smoothstep(outer * 0.88, outer, rDisk));
 
-  // Orbital turbulence: swirl texture advected around the disk.
-  float swirl = noise(vec2(phi * 2.6 + uTime * 0.6 - rDisk * 8.0,
-                           rDisk * 14.0));
-  swirl = 0.55 + 0.8 * swirl;
+  float rNorm = (rDisk - inner) / max(outer - inner, 1e-4);
+  float temp  = 1.05 * pow(max(1.0 - rNorm, 1e-3), 0.75);
 
-  // Relativistic Doppler beaming: approaching side (cos(phi) > 0) brighter
-  // and bluer, receding side dimmer and redder. This is the single strongest
-  // visual cue that says "rotating black hole".
-  float doppler = 0.5 + 0.5 * cos(phi);
-  float beam    = mix(0.18, 2.3, pow(doppler, 2.4));
+  // Orbital Keplerian advection: inner rings rotate much faster.
+  float kepler = 1.0 / pow(max(rDisk / inner, 1.0), 1.5);
+  float advPhi = phi + uTime * 0.9 * kepler;
 
-  // Radial temperature profile — hot at the ISCO, cooling outward.
-  float radial  = exp(-pow((rDisk - inner * 1.12) / (uShadowNdc * 0.9), 2.0))
-                 + 0.28 * exp(-pow((rDisk - inner * 2.4) / (uShadowNdc * 1.8), 2.0));
+  // Log-spiral swirl along the disk — reads as shearing gas.
+  vec2 swirlUv = vec2(advPhi * 3.2 - log(rDisk + 0.01) * 9.0,
+                      rDisk * 22.0);
+  float swirl = 0.45 + 1.05 * fbm(swirlUv);
 
-  vec3 hot   = vec3(1.00, 0.82, 0.48);
-  vec3 cool  = vec3(0.55, 0.72, 1.00);
-  vec3 diskC = mix(hot, cool, smoothstep(0.3, 1.6, beam));
+  // Hot streaks lining the ISCO plunge region.
+  float streaks = pow(max(cos(advPhi * 14.0 + fbm(swirlUv * 0.5) * 6.0), 0.0), 3.0);
+  streaks *= smoothstep(inner * 1.4, inner * 1.02, rDisk);
 
-  float diskI = diskBand * radial * swirl * beam;
+  // Relativistic Doppler beaming + gravitational redshift.
+  // Approaching side (cos(phi) > 0) gets bright + blue; receding dim + red.
+  float approach = cos(phi);
+  float beam     = mix(0.22, 2.8, pow(0.5 + 0.5 * approach, 2.6));
+  // Slight blue-shift on approaching side, red on receding.
+  float tempShift = temp + 0.22 * approach - 0.04;
 
-  // --- Lensed upper arc: the back of the disk bends up over the shadow.
-  // Approximated as a bright arc above the shadow, brightest on the
-  // approaching side (same Doppler boost as the front).
-  float arcR    = uShadowNdc * 1.45;
-  float arcBand = exp(-pow((r - arcR) / (uShadowNdc * 0.18), 2.0));
-  float arcTop  = smoothstep(0.05, 0.85, pL.y / max(r, 1e-4));
+  vec3 diskC = bbody(tempShift);
+  float diskI = diskBand * swirl * beam * (0.55 + 0.7 * temp);
+  // Streaks add crisp high-frequency detail on top of the smooth disk.
+  diskI += diskBand * streaks * beam * 0.55;
+
+  // --- Lensed upper arc: the back half of the disk curls up over the
+  // shadow (Penrose 1979 / Luminet 1979). Approximated as a bright arc
+  // at r ≈ 1.6 rSh, brightest on the approaching side and thinned on
+  // the far side by geometric foreshortening.
+  float arcR    = uShadowNdc * (1.55 + 0.25 * (1.0 - tilt));
+  float arcBand = exp(-pow((r - arcR) / (uShadowNdc * 0.14), 2.0));
+  float arcTop  = smoothstep(-0.05, 0.9, pL.y / max(r, 1e-4));
   float arcPhi  = atan(pL.y, pL.x);
-  float arcBeam = mix(0.4, 1.8, pow(0.5 + 0.5 * cos(arcPhi), 2.0));
+  float arcApp  = cos(arcPhi);
+  float arcBeam = mix(0.35, 2.1, pow(0.5 + 0.5 * arcApp, 2.4));
   float arcI    = arcBand * arcTop * arcBeam;
-  vec3  arcC    = vec3(1.00, 0.86, 0.60);
+  vec3  arcC    = bbody(0.82 + 0.15 * arcApp);
+
+  // Subtle disk atmosphere: thin turbulent glow just above and below
+  // the plane, hiding the hard ellipse edge.
+  float atmos = exp(-pow(pL.y / (uShadowNdc * 0.9 * tilt), 2.0)) *
+                smoothstep(outer * 1.1, inner, rDisk) * 0.35;
+  atmos *= 0.4 + 0.8 * fbm(vec2(advPhi * 2.0, rDisk * 4.0));
 
   // --- Compose emitted light ---
-  vec3 emit = diskC * diskI * 1.6
-            + vec3(1.00, 0.94, 0.78) * photonRing * 1.9
-            + arcC * arcI * 0.9;
+  vec3 emit = diskC * diskI * 1.9
+            + vec3(1.00, 0.95, 0.82) * photonRing * 2.4
+            + arcC * arcI * 1.1
+            + vec3(1.00, 0.78, 0.55) * atmos * 0.45;
 
-  // Disk in front of the shadow must not be blacked out; lift the mask
-  // wherever the disk/ring is glowing.
+  // Broad haze around the whole system (UV + scattered starlight).
+  float glow = exp(-r / (uShadowNdc * 3.2)) * 0.22;
+  emit += vec3(0.65, 0.55, 0.95) * glow;
+
+  // Tone-map soft knee so the ISCO stays bright but not blown.
+  emit = emit / (1.0 + emit * 0.35);
+
+  // Shadow mask: darken destination where we're in the umbra and no
+  // emission overpowers it (the lens pass already wrote black there,
+  // but this also cuts any stars drawn on top in the star pass).
   float bright = max(max(emit.r, emit.g), emit.b);
-  float mask   = shadow * clamp(1.0 - bright, 0.0, 1.0);
-
-  // Soft outer glow to sell the intense UV/X-ray haze around Sgr A*.
-  float glow = exp(-r / (uShadowNdc * 4.0)) * 0.18;
-  emit += vec3(0.55, 0.45, 0.85) * glow;
+  float mask   = shadow * clamp(1.0 - bright * 2.0, 0.0, 1.0);
 
   outColor = vec4(emit, mask);
+}
+`;
+
+// --- Galaxy "fog" plane: a single quad in the xz plane, shaded procedurally
+// with logarithmic spiral arms, dust lanes, and HII (Hα) star-forming regions.
+// This is the photographic-plate layer equivalent to what 100,000 Stars uses,
+// but generated on the fly so it stays sharp at any zoom.
+const FOG_VS = /* glsl */ `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;       // [-1..1] in galaxy plane
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform float uQuadRadius;
+uniform vec2  uParallax;
+out vec2  vPlane;                        // galaxy-plane coords (world units)
+out float vViewZ;
+void main() {
+  vec2 xz = aPos * uQuadRadius;
+  vec3 world = vec3(xz.x, 0.0, xz.y);
+  world.xy += uParallax * 0.04;
+  vec4 viewPos = uView * vec4(world, 1.0);
+  vPlane = xz;
+  vViewZ = -viewPos.z;
+  gl_Position = uProj * viewPos;
+}
+`;
+
+const FOG_FS = /* glsl */ `#version 300 es
+precision highp float;
+
+#define ARMS 2.0
+#define PITCH 0.48
+#define TAU 6.28318530718
+
+in vec2  vPlane;
+in float vViewZ;
+uniform float uTime;
+out vec4 outColor;
+
+// Cheap 2-D value noise.
+float hash(vec2 p) {
+  p = fract(p * vec2(127.1, 311.7));
+  p += dot(p, p + 19.19);
+  return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++) {
+    s += a * vnoise(p);
+    p *= 2.03; a *= 0.5;
+  }
+  return s;
+}
+
+void main() {
+  float r = length(vPlane);
+  if (r > 1.25) discard;
+
+  // Differential rotation — same curve as the star VS so the bright arm
+  // ridges and the star density peaks stay visually locked together.
+  float rotRate = 0.18 / (r * 1.4 + 0.22);
+  float theta = atan(vPlane.y, vPlane.x) - uTime * rotRate;
+
+  // Logarithmic spiral: arms at theta - log(r)/pitch = k * (2π/N).
+  float armPhase = theta - log(r + 0.08) / PITCH;
+  float armCos   = cos(ARMS * armPhase);
+  float dustCos  = cos(ARMS * armPhase - 0.65);   // dust lanes sit inside arms
+  float hiiCos   = cos(ARMS * armPhase + 0.20);
+
+  // Bright arms (soft, broad) + a narrower high-density ridge for structure.
+  float armsBroad = pow(max(armCos * 0.5 + 0.5, 0.0), 2.2);
+  float armsRidge = pow(max(armCos, 0.0), 12.0);
+  float arms = armsBroad * 0.55 + armsRidge * 0.75;
+
+  // Dust lanes — dark narrow bands parallel to arms. Strong in mid-disk,
+  // they fade toward the bulge (too hot) and the outer edge (too thin).
+  float dustMask = pow(max(dustCos, 0.0), 22.0);
+  float dust = dustMask * smoothstep(0.08, 0.32, r) * smoothstep(1.1, 0.5, r);
+
+  // Overall disk density: bulge + exponential disk, edge-faded.
+  float bulge = exp(-r * 5.5) * 1.35;
+  float disk  = exp(-r * 1.7) * (1.0 - smoothstep(1.0, 1.24, r));
+  float base  = bulge + disk * 0.65;
+
+  // Turbulent breakup so arms aren't perfectly geometric.
+  vec2 turb = vec2(cos(theta), sin(theta)) * r;
+  float tn = fbm(turb * 3.6 + vec2(uTime * 0.02, 0.0));
+  float clumps = 0.55 + 0.9 * tn;
+
+  float density = base * (1.0 + arms * 1.6 * clumps) * (1.0 - dust * 0.85);
+  density = max(density, 0.0);
+
+  // HII regions (pink Hα): bright knots along arm tips, sparse and bloomy.
+  float hiiArm   = pow(max(hiiCos, 0.0), 26.0);
+  float hiiRing  = smoothstep(0.25, 0.55, r) * (1.0 - smoothstep(0.9, 1.15, r));
+  float hiiNoise = pow(fbm(vPlane * 7.2 + 11.0), 2.2);
+  float hii = hiiArm * hiiRing * hiiNoise * 2.4;
+
+  // Color ramp: warm yellow bulge → neutral white mid-disk → blue outer rim.
+  vec3 warm  = vec3(1.00, 0.78, 0.42);
+  vec3 mid   = vec3(0.92, 0.90, 1.00);
+  vec3 outer = vec3(0.55, 0.70, 1.05);
+  vec3 pink  = vec3(1.00, 0.45, 0.70);
+  vec3 color = mix(mid, outer, smoothstep(0.3, 0.95, r));
+  color = mix(color, warm, smoothstep(0.5, 0.0, r));
+  color += pink * hii;
+
+  // Fade the outermost rim and suppress the dead zone behind Sgr A* so the
+  // eventual black-hole pass still reads clearly on top.
+  float edgeFade = smoothstep(1.2, 0.55, r);
+  float coreFade = smoothstep(0.04, 0.09, r);
+
+  vec3 emit = color * density * edgeFade * coreFade * 0.9;
+  outColor = vec4(emit, 1.0);
+}
+`;
+
+// --- Lens-warp post pass: samples the fog FBO with Einstein-ring
+// displacement around Sgr A*. Implements the thin-lens equation
+//   beta = theta - theta_E^2 / theta      (source <- image)
+// so we pull the sample point toward the BH center for the primary image.
+// Everything inside the shadow radius is clipped to black.
+const LENS_VS = /* glsl */ `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;
+out vec2 vUv;
+out vec2 vNdc;
+void main() {
+  vNdc = aPos;
+  vUv  = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+const LENS_FS = /* glsl */ `#version 300 es
+precision highp float;
+
+in vec2 vUv;
+in vec2 vNdc;
+uniform sampler2D uScene;
+uniform vec2  uBhNdc;
+uniform float uAspect;
+uniform float uShadowNdc;
+uniform float uEinsteinNdc;
+out vec4 outColor;
+
+void main() {
+  // Work in aspect-corrected NDC so the lens is circular.
+  vec2 p = vNdc - uBhNdc;
+  p.x *= uAspect;
+  float r = length(p);
+
+  // Outside the shadow: invert thin-lens to find source angle beta.
+  // beta = r - rE^2 / r   (stable form; never goes negative above rE).
+  float rE  = uEinsteinNdc;
+  float rSh = uShadowNdc;
+
+  if (r < rSh) {
+    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+
+  float beta = r - (rE * rE) / r;
+  // For r just above rE, beta can dip below zero (back-side image); clamp.
+  beta = max(beta, 0.0);
+  vec2  dir = p / max(r, 1e-5);
+  vec2  srcP = dir * beta;
+  srcP.x /= uAspect;
+  vec2  srcNdc = uBhNdc + srcP;
+  vec2  srcUv  = srcNdc * 0.5 + 0.5;
+
+  // Magnification boosts brightness near the Einstein ring. For a point
+  // lens the scalar magnification is |theta / beta * dtheta/dbeta|, which
+  // in our stable form reduces to (r^2 + rE^2) / (r^2 - rE^2). Clamp it so
+  // we don't blow out at the ring itself.
+  float r2 = r * r, rE2 = rE * rE;
+  float mag = (r2 + rE2) / max(r2 - rE2, rE2 * 0.08);
+  mag = clamp(mag, 0.4, 3.2);
+
+  // Fetch source; clamp to edge so the frame borders don't ghost in.
+  vec3 scene = vec3(0.0);
+  if (all(greaterThanEqual(srcUv, vec2(0.0))) &&
+      all(lessThanEqual   (srcUv, vec2(1.0)))) {
+    scene = texture(uScene, srcUv).rgb;
+  }
+
+  // Soft shadow edge so the event horizon reads as a clean disk.
+  float edge = smoothstep(rSh * 0.97, rSh * 1.02, r);
+  outColor = vec4(scene * mag * edge, 1.0);
 }
 `;
 
@@ -266,35 +517,55 @@ function buildStars(count) {
   const twinkle = new Float32Array(count);
 
   const CORE_YELLOW = [1.00, 0.82, 0.52];
-  const HOT_WHITE   = [0.85, 0.92, 1.00];
-  const BLUE_GIANT  = [0.55, 0.75, 1.00];
+  const HOT_WHITE   = [0.90, 0.94, 1.00];
+  const BLUE_GIANT  = [0.55, 0.72, 1.00];
+  const YOUNG_BLUE  = [0.70, 0.80, 1.10];
   const DUST_RED    = [1.00, 0.55, 0.40];
 
   const bulgeCount = Math.floor(count * BULGE_FRACTION);
+  const haloStart  = Math.floor(count * (1.0 - HALO_FRACTION));
 
   for (let i = 0; i < count; i++) {
     const inBulge = i < bulgeCount;
+    const inHalo  = i >= haloStart;
     const u = Math.random();
-    // Push bulge stars outside the shadow so Sgr A* reads as a clean disk.
-    const r = inBulge ? 0.08 + Math.pow(u, 1.8) * 0.22
-                      : 0.22 + Math.pow(u, 0.65) * 0.78;
+
+    let r;
+    if (inBulge) {
+      // Push bulge stars outside the shadow so Sgr A* reads cleanly.
+      r = 0.08 + Math.pow(u, 1.8) * 0.22;
+    } else if (inHalo) {
+      // Between-arm / thick-disk halo: flat radial distribution, loose.
+      r = 0.25 + u * 0.75;
+    } else {
+      r = 0.22 + Math.pow(u, 0.65) * 0.78;
+    }
     radius[i] = Math.min(r, 1.0);
 
     arm[i] = Math.floor(Math.random() * ARMS);
-    angle[i] = gaussian() * ARM_SPREAD * (1.0 - 0.55 * radius[i]);
+    // Halo stars decouple from arms; arm stars are tightly concentrated.
+    const spread = inHalo ? 1.6 : ARM_SPREAD * (1.0 - 0.55 * radius[i]);
+    angle[i] = gaussian() * spread;
 
     const bulgeBoost = Math.exp(-radius[i] * 6.0);
-    zOff[i] = gaussian() * DISK_THICKNESS * (1.0 + bulgeBoost * 4.0);
+    const thickDisk  = inHalo ? 3.0 : 1.0 + bulgeBoost * 4.0;
+    zOff[i] = gaussian() * DISK_THICKNESS * thickDisk;
 
     let c;
     if (inBulge) {
       c = mixColor(CORE_YELLOW, DUST_RED, Math.random() * 0.4);
-    } else if (radius[i] > 0.82 && Math.random() < 0.22) {
+    } else if (inHalo) {
+      // Halo: older, yellower stars.
+      c = mixColor(CORE_YELLOW, HOT_WHITE, Math.random() * 0.5);
+    } else if (radius[i] > 0.55 && Math.random() < 0.22) {
+      // Young blue clusters along outer arms (OB associations).
+      c = mixColor(YOUNG_BLUE, BLUE_GIANT, Math.random());
+    } else if (radius[i] > 0.82 && Math.random() < 0.15) {
       c = mixColor(DUST_RED, CORE_YELLOW, Math.random() * 0.4);
-    } else if (Math.random() < 0.08) {
+    } else if (Math.random() < 0.06) {
       c = BLUE_GIANT.slice();
     } else {
-      c = mixColor(HOT_WHITE, BLUE_GIANT, Math.random() * 0.55);
+      c = mixColor(HOT_WHITE, BLUE_GIANT, Math.random() * 0.45);
     }
 
     const lum = 0.55 + Math.random() * 0.55;
@@ -303,8 +574,10 @@ function buildStars(count) {
     color[i * 3 + 2] = c[2] * lum;
 
     let s = 1.0 + Math.random() * 1.2;
-    if (Math.random() < 0.012) s += 2.0 + Math.random() * 2.5;
+    // Rare bright giants along the arms — visible hero stars.
+    if (!inHalo && Math.random() < 0.012) s += 2.0 + Math.random() * 2.8;
     if (inBulge) s *= 0.85;
+    if (inHalo)  s *= 0.75;
     size[i] = s;
 
     twinkle[i] = Math.random();
@@ -347,6 +620,37 @@ function main() {
   uploadAttrib(gl, 5, stars.size,    1);
   uploadAttrib(gl, 6, stars.twinkle, 1);
 
+  // --- Galaxy fog program (procedural spiral disk, drawn behind stars) ---
+  const fogProg = link(gl, FOG_VS, FOG_FS);
+  const fu = uniformLocs(gl, fogProg, [
+    'uProj', 'uView', 'uTime', 'uQuadRadius', 'uParallax',
+  ]);
+  const fogVao = gl.createVertexArray();
+  gl.bindVertexArray(fogVao);
+  const fogBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, fogBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1,  1, -1,  -1, 1,  -1, 1,  1, -1,  1, 1]),
+    gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  // --- Lens post-pass: samples the fog FBO with Einstein-ring warp ---
+  const lensProg = link(gl, LENS_VS, LENS_FS);
+  const lu = uniformLocs(gl, lensProg, [
+    'uScene', 'uBhNdc', 'uAspect', 'uShadowNdc', 'uEinsteinNdc',
+  ]);
+  const lensVao = gl.createVertexArray();
+  gl.bindVertexArray(lensVao);
+  const lensBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, lensBuf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const fogTarget = createRenderTarget(gl);
+
   // --- Black-hole pass (fullscreen triangle) ---
   const bhProg = link(gl, BH_VS, BH_FS);
   const bu = uniformLocs(gl, bhProg, [
@@ -388,6 +692,7 @@ function main() {
     viewH = size.height;
     mat4Perspective(Math.PI / 3.4, aspect, 0.05, 12.0, proj);
     pixelScale = size.height * 0.0018;
+    fogTarget.resize(size.width, size.height);
   });
 
   const input = createInput();
@@ -428,7 +733,39 @@ function main() {
     const diskTiltY = Math.max(0.1, Math.abs(Math.sin(tilt)));
     const diskYaw   = 0.0; // xz-plane disk, major axis already horizontal in view
 
+    // --- Pass 0: galaxy fog disk drawn into offscreen FBO ---
+    // We need an unlensed copy of the galaxy so the post pass can sample it
+    // under the thin-lens equation. Additive onto a cleared black target.
+    fogTarget.bind();
+    gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.useProgram(fogProg);
+    gl.bindVertexArray(fogVao);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.uniformMatrix4fv(fu.uProj, false, proj);
+    gl.uniformMatrix4fv(fu.uView, false, view);
+    gl.uniform1f(fu.uTime, t);
+    gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
+    gl.uniform2f(fu.uParallax, input.x, input.y);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // --- Pass 0b: lens post — sample FBO with Einstein warp, write opaque ---
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.disable(gl.BLEND);
+    gl.useProgram(lensProg);
+    gl.bindVertexArray(lensVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fogTarget.tex);
+    gl.uniform1i(lu.uScene, 0);
+    gl.uniform2f(lu.uBhNdc, bhNdc[0], bhNdc[1]);
+    gl.uniform1f(lu.uAspect, aspect);
+    gl.uniform1f(lu.uShadowNdc, shadowNdc);
+    gl.uniform1f(lu.uEinsteinNdc, einsteinNdc);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.BLEND);
 
     // --- Pass 1: stars (additive) ---
     gl.useProgram(starProg);

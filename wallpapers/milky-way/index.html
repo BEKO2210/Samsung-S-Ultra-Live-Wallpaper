@@ -114,43 +114,57 @@
     <h1>Milchstraße · Sgr A*</h1>
     <p class="sub">Live-Wallpaper · WebGL2</p>
 
-    <p>Zentrales supermassereiches Schwarzes Loch mit Ereignishorizont,
-    Photonenring, Doppler-verstärkter Akkretionsscheibe und
-    Gravitationslinseneffekt auf umgebende Sterne. Rotiert mit
-    differenzieller Galaxierotation und reagiert auf Berührung / Neigung.</p>
+    <p>Grand-Design-Spiralgalaxie mit prozeduralen Armen, Staubstraßen,
+    rosa HII-Sternentstehungsregionen und einem supermassereichen
+    Schwarzen Loch (Sgr A*) im Zentrum. Das Schwarze Loch hat eine
+    Doppler-verstärkte Akkretionsscheibe (heiße/helle Annäherungsseite,
+    rote/dunkle Wegbewegungsseite), einen Photonenring bei 1,045 · r<sub>sh</sub>
+    und einen gelenster oberer Bogen (Luminet 1979). Die Galaxie selbst
+    wird per Einstein-Gleichung β = θ − θ<sub>E</sub>² / θ um das Zentrum
+    gebogen — Staubstraßen und Sterne verbiegen sich sichtbar.</p>
 
     <a class="download" href="./wallpaper.html" download="milky-way-wallpaper.html">
       ⬇ Wallpaper herunterladen (eine Datei)
-      <small>wallpaper.html · funktioniert offline · ~24 KB</small>
+      <small>wallpaper.html · offline · ~37 KB · WebGL2</small>
     </a>
 
     <h2>Als Samsung-Wallpaper verwenden</h2>
     <ol>
-      <li><b>Als Video-Wallpaper (empfohlen):</b> Diese Seite im Vollbild
-      öffnen, mit dem Android-Bildschirmrekorder 10–30 Sek. aufnehmen, dann
-      <i>Einstellungen → Hintergrund und Stil → Hintergrundbild → Galerie</i>
-      und das Video wählen. Haken bei „Als Endlosschleife abspielen".</li>
+      <li><b>Als Video-Wallpaper (empfohlen, funktioniert immer):</b>
+      Diese Seite auf dem Telefon im Vollbild öffnen, mit dem
+      Android-Bildschirmrekorder 15–30 Sekunden aufnehmen, dann
+      <i>Einstellungen → Hintergrund und Stil → Hintergrundbild →
+      Galerie</i> öffnen, das Video wählen und <i>„Als Schleife
+      abspielen"</i> aktivieren.</li>
 
-      <li><b>Als Live-Web-Wallpaper:</b> App wie
-      <i>„Web Page Live Wallpaper"</i> oder <i>„HTML Live Wallpaper"</i> aus
-      dem Play Store installieren, auf <i>„Lokale HTML-Datei"</i> stellen und
-      die heruntergeladene <code>wallpaper.html</code> auswählen.</li>
+      <li><b>Als Live-HTML-Wallpaper:</b>
+      Apps aus dem Play Store wie <i>„Web Page Live Wallpaper"</i> oder
+      <i>„HTML Live Wallpaper"</i> installieren, als Quelle <i>„Lokale
+      HTML-Datei"</i> wählen und die heruntergeladene
+      <code>wallpaper.html</code> auswählen. Die Datei enthält alles
+      (Engine, Stylesheet, Shader) — keine Internetverbindung nötig.</li>
 
-      <li><b>Als Vollbild-App (ohne echtes Wallpaper):</b> Im Samsung Internet
-      oder Chrome diese Seite öffnen → Menü → <i>„Zur Startseite hinzufügen"</i>.
-      Das Icon startet dann wie eine Vollbild-App.</li>
+      <li><b>Als Vollbild-PWA (kein echtes Wallpaper, aber sofort bereit):</b>
+      In Samsung Internet oder Chrome diese Seite öffnen → Menü →
+      <i>„Zur Startseite hinzufügen"</i>. Das Icon startet dann
+      Vollbild ohne Browser-UI.</li>
 
-      <li><b>Am PC ansehen:</b> <code>wallpaper.html</code> einfach doppelklicken
-      — keine Installation nötig, läuft in jedem modernen Browser.</li>
+      <li><b>Am PC ansehen oder teilen:</b>
+      <code>wallpaper.html</code> doppelklicken — läuft in jedem
+      modernen Browser (Chrome, Edge, Firefox, Safari).</li>
     </ol>
 
     <h2>Hinweise</h2>
     <ol>
-      <li>Optimiert für Samsung Galaxy S Ultra (1440×3088, 120 Hz OLED).
-      Auf OLED-Displays wirkt das perfekt schwarze Zentrum des Schwarzen Lochs
-      besonders tief.</li>
+      <li>Optimiert für Samsung Galaxy S Ultra (1440 × 3088, 120 Hz OLED).
+      Auf OLED-Displays wirkt das perfekt schwarze Zentrum des Schwarzen
+      Lochs besonders tief — Sgr A*'s Shadow ist pixelgenau <code>#000</code>.</li>
+      <li>Touch / Neigen: die Galaxie parallaxt leicht um den
+      Beobachter. Linke/Rechte Hälfte der Scheibe zeigt auch die
+      Doppler-Asymmetrie.</li>
       <li>Akku: Live-Wallpaper pausiert automatisch bei ausgeschaltetem
-      Display (<code>visibilitychange</code>).</li>
+      Display (<code>visibilitychange</code>) und hält DPR ≤ 2,
+      damit das Rendering bei 120 Hz nicht einbricht.</li>
     </ol>
   </div>
 </div>
