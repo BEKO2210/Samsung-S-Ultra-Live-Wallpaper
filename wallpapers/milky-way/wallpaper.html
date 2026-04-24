@@ -512,9 +512,13 @@ void main() {
   vec2 uv = gl_PointCoord - 0.5;
   float d2 = dot(uv, uv) * 4.0;
   if (d2 > 1.0) discard;
-  float core = exp(-d2 * 6.5);
-  float halo = exp(-d2 * 1.6) * 0.35;
-  float a = (core + halo) * vBrightness;
+  // Three-layer star sprite — narrow core for a punched-out pixel, a
+  // mid halo for size, and a very wide faint halo so hero stars have
+  // the soft "airbrushed" glow the bloom pass picks up.
+  float core  = exp(-d2 *  8.0);
+  float halo  = exp(-d2 *  1.8) * 0.42;
+  float flare = exp(-d2 *  0.5) * 0.16;
+  float a = (core + halo + flare) * vBrightness;
   outColor = vec4(vColor * a, a);
 }
 `;
@@ -722,7 +726,7 @@ void main() {
 }
 `;
 
-// Final composite: HDR scene + bloom, tone-mapped and dithered.
+// Final composite: HDR scene + bloom, tone-mapped, vignetted, dithered.
 const COMPOSITE_FS = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
@@ -741,6 +745,10 @@ void main() {
   vec3 col = scene + bloom * uBloomStrength;
   // Soft-knee tonemap so the bloomed core doesn't clip.
   col = 1.0 - exp(-col * 1.25);
+  // Photographic vignette — 100,000-Stars / planetarium trademark.
+  // vUv is [0..1]; distance from centre fades corners subtly.
+  float vign = smoothstep(1.05, 0.30, length(vUv - 0.5));
+  col *= mix(0.60, 1.0, vign);
   col += (hash12(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
   outColor = vec4(col, 1.0);
 }
@@ -925,10 +933,9 @@ function main() {
   });
 
   const input = createInput();
-  // Textbook face-on view: camera high above the disk, slight yaw drift
-  // so the arms visibly rotate. Distance keeps the whole galaxy in frame
-  // on a portrait aspect.
-  const cam = { distance: 2.65, tilt: 1.05 };
+  // Closer to the 100,000-Stars default: tilted enough to read as 3D
+  // but face-on enough that all four arms and the bar are visible.
+  const cam = { distance: 2.40, tilt: 0.92 };
 
   gl.useProgram(fogProg);
   gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
