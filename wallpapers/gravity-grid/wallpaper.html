@@ -46,6 +46,112 @@ canvas {
   mix-blend-mode: screen;
 }
 
+/* Shared info/download panel used by every wallpaper page. Each wallpaper
+   can override the `.download` gradient via CSS custom property
+   `--download-gradient`. */
+.info-btn {
+  position: fixed;
+  top: env(safe-area-inset-top, 16px);
+  right: 16px;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.85);
+  font: 500 16px/36px -apple-system, system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  z-index: 10;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.info-panel {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.80);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 24px;
+  overflow-y: auto;
+}
+.info-panel.open { display: flex; }
+.info-card {
+  max-width: 520px;
+  width: 100%;
+  color: #fff;
+  font: 400 14px/1.55 -apple-system, system-ui, sans-serif;
+}
+.info-card h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 400;
+}
+.info-card p.sub {
+  margin: 0 0 18px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.info-card h2 {
+  margin: 20px 0 6px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+.info-card ol { margin: 0; padding-left: 20px; }
+.info-card li { margin-bottom: 4px; color: rgba(255, 255, 255, 0.82); }
+.info-card code { color: #9fd0ff; }
+.info-card a {
+  color: #9fc0ff;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(159, 192, 255, 0.4);
+}
+.info-card .download {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 12px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 12px;
+  color: #fff;
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  background: var(--download-gradient,
+    linear-gradient(135deg, rgba(80, 110, 255, 0.18), rgba(255, 140, 80, 0.12)));
+}
+.info-card .download small {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 2px;
+}
+.close-btn {
+  position: absolute;
+  top: env(safe-area-inset-top, 16px);
+  right: 16px;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font: 500 20px/34px -apple-system, system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+}
+
+
+  :root {
+    --download-gradient:
+      linear-gradient(135deg, rgba(80, 180, 255, 0.18), rgba(160, 90, 255, 0.15));
+  }
+
 </style>
 </head>
 <body>
@@ -240,41 +346,13 @@ function mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz, out = new Float32Array(1
   return out;
 }
 
-// Render-to-texture target. Call `resize(w, h)` whenever the viewport
-// changes; it lazily (re)allocates an RGBA8 color texture and FBO. Useful
-// for post-effects that need to sample the scene (e.g. gravitational
-// lensing of the galaxy fog around a black hole).
-function createRenderTarget(gl) {
-  const tex = gl.createTexture();
-  const fbo = gl.createFramebuffer();
-  let w = 0, h = 0;
-
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D, tex, 0);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-  return {
-    tex, fbo,
-    get width() { return w; },
-    get height() { return h; },
-    resize(nw, nh) {
-      if (nw === w && nh === h) return;
-      w = nw; h = nh;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
-        w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    },
-    bind() {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-      gl.viewport(0, 0, w, h);
-    },
-  };
+// Fade the initial `#hud` label (wallpaper title) away a few seconds
+// after load so the render stays unobstructed.
+function fadeHud() {
+  const hud = document.getElementById('hud');
+  if (!hud) return;
+  hud.style.transition = 'opacity 1.8s ease 2.5s';
+  requestAnimationFrame(() => { hud.style.opacity = '0'; });
 }
 
 // Catches throws from a wallpaper entry and shows them on screen without
@@ -292,9 +370,9 @@ function runWallpaper(mainFn) {
   }
 }
 
-return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, createRenderTarget, runWallpaper };
+return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, fadeHud, runWallpaper };
 })();
-const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, mat4Perspective, mat4LookAt } = __engine;
+const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, fadeHud, mat4Perspective, mat4LookAt } = __engine;
 // Spacetime grid — a square mesh in the xz plane rendered as GL_LINES.
 // Up to MAX_MASSES invisible point masses deflect every vertex downward
 // by the softened-Newtonian profile y = −M / √(r² + ε²). The sum over
@@ -461,9 +539,10 @@ function buildStars(count) {
   return { dir, size, color, twinkle };
 }
 
-// Build an indexed line list over an N×N lattice: horizontal + vertical
-// segments. Index buffer as Uint32 to stay safe for N > 256.
+// Build an indexed line list over an N×N lattice. N ≤ 255 so the largest
+// index fits in a Uint16 (65 535); larger grids need Uint32.
 function buildGrid(n) {
+  if (n * n > 65535) throw new Error('buildGrid: N too large for Uint16 indices');
   const verts = new Float32Array(n * n * 2);
   for (let j = 0; j < n; j++) {
     const v = (j / (n - 1)) * 2.0 - 1.0;
@@ -476,7 +555,7 @@ function buildGrid(n) {
   }
 
   // 2·N·(N−1) segments · 2 indices/segment.
-  const indices = new Uint32Array(4 * n * (n - 1));
+  const indices = new Uint16Array(4 * n * (n - 1));
   let p = 0;
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n - 1; i++) {
@@ -573,11 +652,18 @@ function main() {
   // Packed (x, z, strength) for each mass, uploaded via uniform3fv.
   const massBuf = new Float32Array(MAX_MASSES * 3);
 
-  const hud = document.getElementById('hud');
-  if (hud) {
-    hud.style.transition = 'opacity 1.8s ease 2.5s';
-    requestAnimationFrame(() => { hud.style.opacity = '0'; });
-  }
+  // Constants — uploaded once. uMaxDepth's bound is the strongest well
+  // sampled at its own centre: y = −M / √ε.
+  const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
+  gl.useProgram(prog);
+  gl.uniform1f(u.uExtent,   GRID_EXTENT);
+  gl.uniform1f(u.uSoften,   SOFTEN);
+  gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
+  gl.uniform1i(u.uMassCount, masses.length);
+  gl.useProgram(starProg);
+  gl.uniform1f(su.uSphereRadius, 30.0);
+
+  fadeHud();
 
   startLoop((dt, t) => {
     input.update(dt);
@@ -611,7 +697,6 @@ function main() {
     gl.uniformMatrix4fv(su.uView, false, view);
     gl.uniform1f(su.uPixelScale, pixelScale);
     gl.uniform1f(su.uTime, t);
-    gl.uniform1f(su.uSphereRadius, 30.0);
     gl.uniform3f(su.uCamPos, ex, ey, ez);
     gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
 
@@ -620,15 +705,8 @@ function main() {
     gl.bindVertexArray(vao);
     gl.uniformMatrix4fv(u.uProj, false, proj);
     gl.uniformMatrix4fv(u.uView, false, view);
-    gl.uniform1f(u.uExtent, GRID_EXTENT);
-    gl.uniform1f(u.uSoften, SOFTEN);
-    gl.uniform1i(u.uMassCount, masses.length);
     gl.uniform3fv(u.uMasses, massBuf);
-    // Deepest well we could plausibly hit: strongest mass sampled at its
-    // own center, y = −M / √ε. Used by the FS to normalize depth.
-    const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
-    gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
-    gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_SHORT, 0);
   });
 }
 

@@ -14,9 +14,16 @@ const ROOT = resolve(__dirname, '..');
 const name = process.argv[2] || 'milky-way';
 const dir  = resolve(ROOT, 'wallpapers', name);
 
-const css    = readFileSync(resolve(ROOT, 'shared/style.css'), 'utf8');
-const engine = readFileSync(resolve(ROOT, 'shared/engine.js'), 'utf8');
-const main   = readFileSync(resolve(dir, 'main.js'), 'utf8');
+const css      = readFileSync(resolve(ROOT, 'shared/style.css'), 'utf8');
+const engine   = readFileSync(resolve(ROOT, 'shared/engine.js'), 'utf8');
+const main     = readFileSync(resolve(dir, 'main.js'), 'utf8');
+const htmlPage = readFileSync(resolve(dir, 'index.html'), 'utf8');
+
+// Pull any per-wallpaper <style> block(s) so custom overrides (e.g.
+// --download-gradient) are preserved in the standalone bundle.
+const extraCss = Array.from(htmlPage.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g))
+  .map(m => m[1])
+  .join('\n');
 
 // Strip the ES-module import from main.js — we'll expose engine exports on
 // a single object and rewrite the destructured names into that object.
@@ -50,6 +57,7 @@ const html = `<!doctype html>
 <title>${title} — Live Wallpaper</title>
 <style>
 ${css}
+${extraCss}
 </style>
 </head>
 <body>

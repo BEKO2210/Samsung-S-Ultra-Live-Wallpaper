@@ -46,6 +46,107 @@ canvas {
   mix-blend-mode: screen;
 }
 
+/* Shared info/download panel used by every wallpaper page. Each wallpaper
+   can override the `.download` gradient via CSS custom property
+   `--download-gradient`. */
+.info-btn {
+  position: fixed;
+  top: env(safe-area-inset-top, 16px);
+  right: 16px;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.85);
+  font: 500 16px/36px -apple-system, system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  z-index: 10;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.info-panel {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.80);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 24px;
+  overflow-y: auto;
+}
+.info-panel.open { display: flex; }
+.info-card {
+  max-width: 520px;
+  width: 100%;
+  color: #fff;
+  font: 400 14px/1.55 -apple-system, system-ui, sans-serif;
+}
+.info-card h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 400;
+}
+.info-card p.sub {
+  margin: 0 0 18px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.info-card h2 {
+  margin: 20px 0 6px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+.info-card ol { margin: 0; padding-left: 20px; }
+.info-card li { margin-bottom: 4px; color: rgba(255, 255, 255, 0.82); }
+.info-card code { color: #9fd0ff; }
+.info-card a {
+  color: #9fc0ff;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(159, 192, 255, 0.4);
+}
+.info-card .download {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 12px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 12px;
+  color: #fff;
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  background: var(--download-gradient,
+    linear-gradient(135deg, rgba(80, 110, 255, 0.18), rgba(255, 140, 80, 0.12)));
+}
+.info-card .download small {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 2px;
+}
+.close-btn {
+  position: absolute;
+  top: env(safe-area-inset-top, 16px);
+  right: 16px;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font: 500 20px/34px -apple-system, system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+}
+
+
 </style>
 </head>
 <body>
@@ -240,41 +341,13 @@ function mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz, out = new Float32Array(1
   return out;
 }
 
-// Render-to-texture target. Call `resize(w, h)` whenever the viewport
-// changes; it lazily (re)allocates an RGBA8 color texture and FBO. Useful
-// for post-effects that need to sample the scene (e.g. gravitational
-// lensing of the galaxy fog around a black hole).
-function createRenderTarget(gl) {
-  const tex = gl.createTexture();
-  const fbo = gl.createFramebuffer();
-  let w = 0, h = 0;
-
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
-    gl.TEXTURE_2D, tex, 0);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-  return {
-    tex, fbo,
-    get width() { return w; },
-    get height() { return h; },
-    resize(nw, nh) {
-      if (nw === w && nh === h) return;
-      w = nw; h = nh;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
-        w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    },
-    bind() {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-      gl.viewport(0, 0, w, h);
-    },
-  };
+// Fade the initial `#hud` label (wallpaper title) away a few seconds
+// after load so the render stays unobstructed.
+function fadeHud() {
+  const hud = document.getElementById('hud');
+  if (!hud) return;
+  hud.style.transition = 'opacity 1.8s ease 2.5s';
+  requestAnimationFrame(() => { hud.style.opacity = '0'; });
 }
 
 // Catches throws from a wallpaper entry and shows them on screen without
@@ -292,9 +365,9 @@ function runWallpaper(mainFn) {
   }
 }
 
-return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, createRenderTarget, runWallpaper };
+return { createCanvas, fitCanvas, onResize, startLoop, createInput, compile, link, uniformLocs, uploadAttrib, mat4Identity, mat4Perspective, mat4LookAt, fadeHud, runWallpaper };
 })();
-const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, mat4Perspective, mat4LookAt } = __engine;
+const { createCanvas, onResize, startLoop, createInput, link, uniformLocs, uploadAttrib, runWallpaper, fadeHud, mat4Perspective, mat4LookAt } = __engine;
 // Textbook / planetarium view of the Milky Way: a barred spiral (SBbc)
 // seen nearly face-on, 4 major arms, central bar, dust lanes, halo
 // globular clusters. No black hole, no lensing — just the galaxy.
@@ -660,11 +733,12 @@ function main() {
   // on a portrait aspect.
   const cam = { distance: 2.65, tilt: 1.05 };
 
-  const hud = document.getElementById('hud');
-  if (hud) {
-    hud.style.transition = 'opacity 1.8s ease 2.5s';
-    requestAnimationFrame(() => { hud.style.opacity = '0'; });
-  }
+  // Constants — uploaded once. Additive blending is shared by both passes.
+  gl.useProgram(fogProg);
+  gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
+  gl.blendFunc(gl.ONE, gl.ONE);
+
+  fadeHud();
 
   startLoop((dt, t) => {
     input.update(dt);
@@ -682,18 +756,15 @@ function main() {
     // --- Pass 1: galaxy fog plane (additive) ---
     gl.useProgram(fogProg);
     gl.bindVertexArray(fogVao);
-    gl.blendFunc(gl.ONE, gl.ONE);
     gl.uniformMatrix4fv(fu.uProj, false, proj);
     gl.uniformMatrix4fv(fu.uView, false, view);
     gl.uniform1f(fu.uTime, t);
-    gl.uniform1f(fu.uQuadRadius, FOG_QUAD_RADIUS);
     gl.uniform2f(fu.uParallax, input.x, input.y);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     // --- Pass 2: stars (additive) ---
     gl.useProgram(starProg);
     gl.bindVertexArray(starVao);
-    gl.blendFunc(gl.ONE, gl.ONE);
     gl.uniformMatrix4fv(su.uProj, false, proj);
     gl.uniformMatrix4fv(su.uView, false, view);
     gl.uniform1f(su.uTime, t);

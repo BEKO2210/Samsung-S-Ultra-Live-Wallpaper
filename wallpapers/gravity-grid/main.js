@@ -1,6 +1,6 @@
 import {
   createCanvas, onResize, startLoop, createInput,
-  link, uniformLocs, uploadAttrib, runWallpaper,
+  link, uniformLocs, uploadAttrib, runWallpaper, fadeHud,
   mat4Perspective, mat4LookAt,
 } from '../../shared/engine.js';
 
@@ -170,9 +170,10 @@ function buildStars(count) {
   return { dir, size, color, twinkle };
 }
 
-// Build an indexed line list over an N×N lattice: horizontal + vertical
-// segments. Index buffer as Uint32 to stay safe for N > 256.
+// Build an indexed line list over an N×N lattice. N ≤ 255 so the largest
+// index fits in a Uint16 (65 535); larger grids need Uint32.
 function buildGrid(n) {
+  if (n * n > 65535) throw new Error('buildGrid: N too large for Uint16 indices');
   const verts = new Float32Array(n * n * 2);
   for (let j = 0; j < n; j++) {
     const v = (j / (n - 1)) * 2.0 - 1.0;
@@ -185,7 +186,7 @@ function buildGrid(n) {
   }
 
   // 2·N·(N−1) segments · 2 indices/segment.
-  const indices = new Uint32Array(4 * n * (n - 1));
+  const indices = new Uint16Array(4 * n * (n - 1));
   let p = 0;
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n - 1; i++) {
@@ -282,11 +283,18 @@ function main() {
   // Packed (x, z, strength) for each mass, uploaded via uniform3fv.
   const massBuf = new Float32Array(MAX_MASSES * 3);
 
-  const hud = document.getElementById('hud');
-  if (hud) {
-    hud.style.transition = 'opacity 1.8s ease 2.5s';
-    requestAnimationFrame(() => { hud.style.opacity = '0'; });
-  }
+  // Constants — uploaded once. uMaxDepth's bound is the strongest well
+  // sampled at its own centre: y = −M / √ε.
+  const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
+  gl.useProgram(prog);
+  gl.uniform1f(u.uExtent,   GRID_EXTENT);
+  gl.uniform1f(u.uSoften,   SOFTEN);
+  gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
+  gl.uniform1i(u.uMassCount, masses.length);
+  gl.useProgram(starProg);
+  gl.uniform1f(su.uSphereRadius, 30.0);
+
+  fadeHud();
 
   startLoop((dt, t) => {
     input.update(dt);
@@ -320,7 +328,6 @@ function main() {
     gl.uniformMatrix4fv(su.uView, false, view);
     gl.uniform1f(su.uPixelScale, pixelScale);
     gl.uniform1f(su.uTime, t);
-    gl.uniform1f(su.uSphereRadius, 30.0);
     gl.uniform3f(su.uCamPos, ex, ey, ez);
     gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
 
@@ -329,15 +336,8 @@ function main() {
     gl.bindVertexArray(vao);
     gl.uniformMatrix4fv(u.uProj, false, proj);
     gl.uniformMatrix4fv(u.uView, false, view);
-    gl.uniform1f(u.uExtent, GRID_EXTENT);
-    gl.uniform1f(u.uSoften, SOFTEN);
-    gl.uniform1i(u.uMassCount, masses.length);
     gl.uniform3fv(u.uMasses, massBuf);
-    // Deepest well we could plausibly hit: strongest mass sampled at its
-    // own center, y = −M / √ε. Used by the FS to normalize depth.
-    const maxStrength = masses.reduce((a, m) => Math.max(a, m.strength), 0);
-    gl.uniform1f(u.uMaxDepth, maxStrength / Math.sqrt(SOFTEN));
-    gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.LINES, indices.length, gl.UNSIGNED_SHORT, 0);
   });
 }
 
