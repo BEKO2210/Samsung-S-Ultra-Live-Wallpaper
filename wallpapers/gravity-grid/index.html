@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
+<meta name="theme-color" content="#000000" />
+<title>Gravity Grid — Live Wallpaper</title>
+<link rel="stylesheet" href="../../shared/style.css" />
+<style>
+  .info-btn {
+    position: fixed;
+    top: env(safe-area-inset-top, 16px);
+    right: 16px;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(0,0,0,0.45);
+    color: rgba(255,255,255,0.85);
+    font: 500 16px/36px -apple-system, system-ui, sans-serif;
+    text-align: center;
+    cursor: pointer;
+    z-index: 10;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .info-panel {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.80);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 24px;
+    overflow-y: auto;
+  }
+  .info-panel.open { display: flex; }
+  .info-card {
+    max-width: 520px;
+    width: 100%;
+    color: #fff;
+    font: 400 14px/1.55 -apple-system, system-ui, sans-serif;
+  }
+  .info-card h1 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 400;
+  }
+  .info-card p.sub {
+    margin: 0 0 18px;
+    color: rgba(255,255,255,0.5);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .info-card h2 {
+    margin: 20px 0 6px;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.85);
+  }
+  .info-card ol { margin: 0; padding-left: 20px; }
+  .info-card li { margin-bottom: 4px; color: rgba(255,255,255,0.82); }
+  .info-card code { color: #9fd0ff; }
+  .info-card .download {
+    display: inline-block;
+    margin-top: 18px;
+    padding: 12px 18px;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 12px;
+    color: #fff;
+    text-decoration: none;
+    letter-spacing: 0.04em;
+    background: linear-gradient(135deg, rgba(80,180,255,0.18), rgba(160,90,255,0.15));
+  }
+  .info-card .download small {
+    display: block;
+    font-size: 11px;
+    color: rgba(255,255,255,0.55);
+    margin-top: 2px;
+  }
+  .close-btn {
+    position: absolute;
+    top: env(safe-area-inset-top, 16px);
+    right: 16px;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+    font: 500 20px/34px -apple-system, system-ui, sans-serif;
+    text-align: center;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div class="hud" id="hud">Gravity Grid</div>
+
+<button class="info-btn" id="info-open" aria-label="Info">i</button>
+
+<div class="info-panel" id="info-panel" role="dialog" aria-modal="true" aria-label="Wallpaper installieren">
+  <button class="close-btn" id="info-close" aria-label="Schließen">×</button>
+  <div class="info-card">
+    <h1>Gravity Grid</h1>
+    <p class="sub">Raumzeit-Krümmung · WebGL2</p>
+
+    <p>Ein dreidimensionales Gitter wird von unsichtbaren Massen
+    eingedrückt — Einsteins Raumzeit als Flamm-Paraboloid. Jede Masse
+    erzeugt einen Trichter nach <code>y = −M/√(r² + ε²)</code>; schwerere
+    Massen krümmen tiefer. Massen wandern langsam durch die Szene.</p>
+
+    <a class="download" href="./wallpaper.html" download="gravity-grid-wallpaper.html">
+      ⬇ Wallpaper herunterladen (eine Datei)
+      <small>wallpaper.html · offline · WebGL2</small>
+    </a>
+
+    <h2>Als Samsung-Wallpaper verwenden</h2>
+    <ol>
+      <li><b>Video-Wallpaper:</b> Seite im Vollbild öffnen, mit Android-
+      Bildschirmrekorder 15–30 Sek. aufnehmen, dann <i>Einstellungen →
+      Hintergrund und Stil → Galerie</i> und das Video wählen.</li>
+      <li><b>Live-HTML-Wallpaper:</b> App wie <i>„HTML Live Wallpaper"</i>
+      oder <i>„Web Page Live Wallpaper"</i> installieren, lokale
+      <code>wallpaper.html</code> auswählen.</li>
+      <li><b>Als PWA:</b> In Samsung Internet oder Chrome öffnen →
+      Menü → <i>„Zur Startseite hinzufügen"</i>.</li>
+      <li><b>Am PC:</b> <code>wallpaper.html</code> doppelklicken.</li>
+    </ol>
+  </div>
+</div>
+
+<script type="module" src="./main.js"></script>
+<script>
+  const openBtn = document.getElementById('info-open');
+  const closeBtn = document.getElementById('info-close');
+  const panel = document.getElementById('info-panel');
+  openBtn.addEventListener('click', () => panel.classList.add('open'));
+  closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+  panel.addEventListener('click', (e) => {
+    if (e.target === panel) panel.classList.remove('open');
+  });
+</script>
+</body>
+</html>
